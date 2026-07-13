@@ -53,5 +53,5 @@ data class StoreMap(
     val name: String = "Living-room proof shop",
     val landmarks: List<LandmarkRecord> = emptyList(),
     val items: List<ItemRecord> = emptyList(),
-    val minimumLandmarksForLock: Int = 3
+    val minimumLandmarksForLock: Int = 2
 )

@@ -69,6 +69,7 @@ import io.github.sceneview.rememberModelLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.sqrt
@@ -82,6 +83,13 @@ private data class LandmarkSpec(
     val guidance: String
 )
 
+private const val requiredNavigationMatches = 2
+private const val maximumReferenceImageEdge = 768
+
+// Older v0.3 maps contain three overlapping fireplace crops. Keeping the centre
+// view avoids making ARCore distinguish nearly identical images from one wall.
+private val redundantNavigationLandmarkIds = setOf("fireplace-left", "fireplace-right")
+
 private val landmarkSpecs = listOf(
     LandmarkSpec(
         id = "parrot-picture",
@@ -94,19 +102,9 @@ private val landmarkSpecs = listOf(
         guidance = "Frame the fixed wall and trim around the left arch. Avoid the curtain and sofa."
     ),
     LandmarkSpec(
-        id = "fireplace-left",
-        label = "Left fireplace detail",
-        guidance = "Frame the left marble edge and the fixed cabinet beside it."
-    ),
-    LandmarkSpec(
         id = "fireplace-centre",
         label = "Fireplace centre",
         guidance = "Frame the mantel, black opening and surrounding marble together."
-    ),
-    LandmarkSpec(
-        id = "fireplace-right",
-        label = "Right fireplace detail",
-        guidance = "Frame the right marble edge and the fixed wall detail beside it."
     ),
     LandmarkSpec(
         id = "right-arch",
@@ -598,10 +596,15 @@ private fun NavigationPage(
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
     val runtimeDatabase = rememberRuntimeAugmentedImageDatabase()
-    val relocalizer = remember(map) {
-        LandmarkRelocalizer(minimumMatches = map.minimumLandmarksForLock.coerceAtLeast(3))
+    val navigationLandmarks = remember(map) {
+        map.landmarks.filter { landmark ->
+            landmark.referenceType == "room" && landmark.id !in redundantNavigationLandmarkIds
+        }
     }
-    val landmarkById = remember(map) { map.landmarks.associateBy { it.id } }
+    val relocalizer = remember(map) {
+        LandmarkRelocalizer(minimumMatches = requiredNavigationMatches)
+    }
+    val landmarkById = remember(navigationLandmarks) { navigationLandmarks.associateBy { it.id } }
     val item = remember(map) { map.items.first() }
 
     var status by remember { mutableStateOf("Loading saved visual landmarks…") }
@@ -646,23 +649,29 @@ private fun NavigationPage(
                 if (runtimeDatabase.size == 0) {
                     scope.launch {
                         var loaded = 0
-                        map.landmarks.forEach { landmark ->
+                        navigationLandmarks.forEachIndexed { index, landmark ->
+                            status = "Preparing room landmark ${index + 1}/${navigationLandmarks.size}…"
+                            yield()
                             val bitmap = withContext(Dispatchers.IO) {
                                 repository.loadLandmarkBitmap(landmark.imageFile)
+                                    ?.let(::constrainReferenceBitmap)
                             }
                             if (bitmap != null) {
-                                when (runtimeDatabase.addImage(
-                                    name = landmark.id,
-                                    bitmap = bitmap,
-                                    widthInMeters = landmark.physicalWidthMetres
-                                )) {
+                                when (runCatching {
+                                    runtimeDatabase.addImage(
+                                        name = landmark.id,
+                                        bitmap = bitmap,
+                                        widthInMeters = landmark.physicalWidthMetres
+                                    )
+                                }.getOrNull()) {
                                     is AddImageResult.Added -> loaded += 1
                                     else -> Unit
                                 }
                             }
+                            yield()
                         }
                         status = if (loaded > 0) {
-                            "Look around slowly. Searching for $loaded saved landmarks…"
+                            "Turn around slowly once. Searching $loaded distinct room landmarks…"
                         } else {
                             "No landmark images loaded. Remap the room."
                         }
@@ -672,10 +681,7 @@ private fun NavigationPage(
             onSessionUpdated = { _, frame ->
                 if (frame.camera.trackingState == TrackingState.TRACKING) {
                     frame.getUpdatedTrackables(AugmentedImage::class.java).forEach { image ->
-                        if (
-                            image.trackingState == TrackingState.TRACKING &&
-                            image.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
-                        ) {
+                        if (image.trackingState == TrackingState.TRACKING) {
                             val record = landmarkById[image.name]
                             if (record != null) {
                                 alignment = relocalizer.observe(
@@ -693,13 +699,13 @@ private fun NavigationPage(
                         previousAlignmentKey = alignmentKey
                         status = when (alignment.quality) {
                             AlignmentQuality.SEARCHING ->
-                                "Scan across the saved room details. No AR markers are shown until several references agree."
+                                "Make one slow turn across the room. Navigation starts when two distinct details agree."
                             AlignmentQuality.CHECKING ->
-                                "Checking ${alignment.recentMatches} match(es). Need ${map.minimumLandmarksForLock} agreeing references from different parts of the room."
+                                "Recognised ${alignment.recentMatches} detail(s). Need $requiredNavigationMatches agreeing references from different parts of the room."
                             AlignmentQuality.LOCKED ->
                                 "Room verified by ${alignment.agreeingMatches} agreeing references. Drift correction is active."
                             AlignmentQuality.STALE ->
-                                "Alignment confidence dropped. Markers are hidden; look at two or three saved details again."
+                                "Alignment confidence dropped. Markers are hidden; turn toward two saved room details again."
                         }
                     }
 
@@ -745,7 +751,7 @@ private fun NavigationPage(
         TopPanel(
             title = if (!alignment.canRenderNavigation) "Verifying this shop…" else "Finding ${item.name}",
             instruction = if (!alignment.canRenderNavigation) {
-                "Look slowly across several fixed details. Navigation stays hidden until their poses agree."
+                "Make one slow turn. Two distinct fixed details are enough when their positions agree."
             } else {
                 "Follow the separated green floor markers to the red item highlight."
             },
@@ -764,7 +770,7 @@ private fun NavigationPage(
             Column(Modifier.padding(16.dp)) {
                 Text(item.name, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (!alignment.canRenderNavigation) "Waiting for a reliable multi-reference lock" else "Digital twin verified",
+                    if (!alignment.canRenderNavigation) "Recognising the room from one slow turn" else "Digital twin verified",
                     color = Color(0xFFAEC4D3)
                 )
             }
@@ -932,7 +938,17 @@ private fun centreCrop(source: Bitmap): Bitmap {
     val cropHeight = (source.height * 0.60f).toInt().coerceIn(64, source.height)
     val left = (source.width - cropWidth) / 2
     val top = (source.height - cropHeight) / 2
-    return Bitmap.createBitmap(source, left, top, cropWidth, cropHeight)
+    return constrainReferenceBitmap(Bitmap.createBitmap(source, left, top, cropWidth, cropHeight))
+}
+
+/** Keeps ARCore's runtime image database small enough to build without long UI stalls. */
+private fun constrainReferenceBitmap(source: Bitmap): Bitmap {
+    val longestEdge = maxOf(source.width, source.height)
+    if (longestEdge <= maximumReferenceImageEdge) return source
+    val scale = maximumReferenceImageEdge.toFloat() / longestEdge.toFloat()
+    val scaledWidth = (source.width * scale).toInt().coerceAtLeast(1)
+    val scaledHeight = (source.height * scale).toInt().coerceAtLeast(1)
+    return Bitmap.createScaledBitmap(source, scaledWidth, scaledHeight, true)
 }
 
 private fun buildRouteMarkers(cameraInMap: Pose?, itemPose: Pose): List<Position> {

@@ -20,13 +20,13 @@ data class AlignmentSnapshot(
  * position or rotation are treated as false matches instead of moving the map.
  */
 class LandmarkRelocalizer(
-    private val minimumMatches: Int = 3,
-    private val maximumObservationAgeMillis: Long = 30_000L,
-    private val staleAfterMillis: Long = 10_000L,
-    private val discardAfterMillis: Long = 24_000L,
-    private val translationToleranceMetres: Float = 0.32f,
-    private val rotationToleranceDegrees: Float = 11f,
-    private val minimumMapSpreadMetres: Float = 0.70f,
+    private val minimumMatches: Int = 2,
+    private val maximumObservationAgeMillis: Long = 90_000L,
+    private val staleAfterMillis: Long = 20_000L,
+    private val discardAfterMillis: Long = 45_000L,
+    private val translationToleranceMetres: Float = 0.50f,
+    private val rotationToleranceDegrees: Float = 17f,
+    private val minimumMapSpreadMetres: Float = 0.45f,
     private val smoothing: Float = 0.16f
 ) {
     private data class Observation(
