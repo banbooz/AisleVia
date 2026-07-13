@@ -49,7 +49,7 @@ data class ItemRecord(
 
 @Serializable
 data class StoreMap(
-    val version: Int = 2,
+    val version: Int = 3,
     val name: String = "Living-room proof shop",
     val landmarks: List<LandmarkRecord> = emptyList(),
     val items: List<ItemRecord> = emptyList(),
