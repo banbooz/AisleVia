@@ -1,4 +1,4 @@
-# AisleVia native Android prototype v0.2.1
+# AisleVia native Android prototype v0.3.1
 
 ## Crash-safety update
 
@@ -15,8 +15,13 @@ The first Android build could accept one landmark as a full room alignment. A fa
 
 Version 0.2 deliberately rejects maps made by that build.
 
-## One-time detailed mapping
+Version 0.3 automatically captures landmark and item-group frames after the
+detected surface remains stable. The capture check can use a narrower measured
+span on the same plane, so wall sections beside arches no longer require the
+entire frame to be one large detected plane. Mapping text is capped to prevent
+overlap on phones using larger font settings.
 
+## One-time detailed mapping
 1. Set the entrance and a forward floor point.
 2. Capture eight fixed references distributed around the room: picture, arch details, three fireplace views, bookcase and coffee-table front.
 3. Each capture must lie on a detected real plane. The app hit-tests both edges of the capture frame and measures its physical width automatically.
