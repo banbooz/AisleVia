@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+  <meta name="theme-color" content="#07131f" />
+  <title>AisleVia AR — Living-room proof of concept</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./assets/icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="unsupported" class="screen hidden" role="alert">
+    <div class="card large">
+      <div class="brand"><img src="./assets/icon.svg" alt="" /><span>AisleVia AR</span></div>
+      <h1>Tracked AR is not available here</h1>
+      <p>This proof of concept needs a WebXR-capable browser, an AR-capable phone, and an HTTPS address. The tracked web version is designed for Chrome on an ARCore-supported Android phone.</p>
+      <p class="muted">Opening the downloaded HTML file directly will not work because camera and XR tracking require a secure web address.</p>
+      <button id="retrySupport" class="primary">Check again</button>
+    </div>
+  </div>
+
+  <div id="landing" class="screen">
+    <div class="card large">
+      <div class="brand"><img src="./assets/icon.svg" alt="" /><span>AisleVia AR</span><small>ROOM POC</small></div>
+      <h1>Real arrows on your real floor</h1>
+      <p>Use the living room as a pretend shop. The phone tracks your movement, lays a route over the carpet, points up toward the target, and places a pulsing red highlight over the item.</p>
+      <ol class="steps">
+        <li>Stand in the doorway and face the fireplace.</li>
+        <li>Start AR, slowly scan the carpet, and aim the green circle at the doorway floor.</li>
+        <li>Tap <b>Place entrance</b>, then choose an item.</li>
+      </ol>
+      <div class="privacy">Camera frames stay on the phone. This prototype does not upload or save them.</div>
+      <button id="startAR" class="primary big">Start tracked AR</button>
+      <button id="showPlan" class="secondary">View calibration floor plan</button>
+      <img id="planPreview" class="plan hidden" src="./assets/floorplan.svg" alt="Approximate living-room floor plan" />
+      <div id="supportMessage" class="muted small">Checking this phone for AR support…</div>
+    </div>
+  </div>
+
+  <main id="overlay" class="hidden">
+    <header class="topbar">
+      <div>
+        <div class="eyebrow">AISLEVIA AR · LIVE</div>
+        <div id="status">Scan the floor until the green placement circle appears.</div>
+      </div>
+      <button id="endAR" class="iconButton" aria-label="End AR">×</button>
+    </header>
+
+    <section id="placementPanel" class="bottomPanel">
+      <div class="placementRow">
+        <div class="reticleLegend"><span></span>Aim at the doorway floor while facing the fireplace</div>
+        <button id="placeEntrance" class="primary" disabled>Place entrance</button>
+      </div>
+    </section>
+
+    <section id="finderPanel" class="bottomPanel hidden">
+      <label for="itemSelect">Find an item</label>
+      <div class="selectRow">
+        <select id="itemSelect">
+          <option value="pringles">Pringles can — coffee table</option>
+          <option value="baking">Baking soda — bookcase shelf</option>
+          <option value="remote">TV remote — left sofa</option>
+          <option value="books">Book — white bookcase</option>
+          <option value="tv">Television — right wall</option>
+        </select>
+        <button id="recenter" class="secondary">Re-place</button>
+      </div>
+      <div class="progress"><div id="progressBar"></div></div>
+      <div class="routeInfo"><b id="targetName">Pringles can</b><span id="distanceText">Calculating route…</span></div>
+      <details id="adjustments">
+        <summary>Fine-tune alignment</summary>
+        <div class="nudgeGrid">
+          <button data-nudge="forward">↑</button>
+          <button data-nudge="left">←</button>
+          <button data-nudge="reset">Reset</button>
+          <button data-nudge="right">→</button>
+          <button data-nudge="back">↓</button>
+          <button data-nudge="rotateLeft">↶</button>
+          <button data-nudge="rotateRight">↷</button>
+        </div>
+        <p class="muted small">Each arrow moves the map by 5 cm. Rotation buttons turn it by 2°. Use this because the room dimensions were estimated from photos.</p>
+      </details>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </main>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.181.0/build/three.module.js"
+    }
+  }
+  </script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
