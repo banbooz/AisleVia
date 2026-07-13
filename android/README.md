@@ -1,4 +1,15 @@
-# AisleVia native Android prototype v0.3.2
+# AisleVia native Android prototype v0.4.0
+
+## Automatic visual keyframe map
+
+- staff mode captures up to 30 visually useful keyframes during one slow room sweep
+- captures are spaced by camera movement, quality checked and pinned into the same map coordinate system
+- named picture/fireplace/bookcase prompts are no longer required
+- the complete ARCore image database is built once and serialized instead of being rebuilt after every added image
+- customer mode collects all available matches during a five-second visual scan before revealing navigation
+- the virtual route is continuously reprojected into the live camera view as the customer moves
+
+ARCore Augmented Images recognise textured planar views rather than a complete 3D room mesh. The sweep therefore favours walls, shelf fronts, aisle signs and other stable detailed surfaces. A true obstacle-aware route still requires a shop navmesh or walkable-path graph in the virtual-world data.
 
 ## Faster room recognition
 
@@ -30,10 +41,10 @@ span on the same plane, so wall sections beside arches no longer require the
 entire frame to be one large detected plane. Mapping text is capped to prevent
 overlap on phones using larger font settings.
 
-## One-time detailed mapping
+## One-time visual mapping
 1. Set the entrance and a forward floor point.
-2. Capture six distinct fixed references distributed around the room: picture, both arch details, fireplace centre, bookcase and coffee-table front.
-3. Each capture must lie on a detected real plane. The app hit-tests both edges of the capture frame and measures its physical width automatically.
+2. Stand near the centre and slowly sweep the phone around the room while the app automatically collects 30 useful visual keyframes.
+3. Each accepted keyframe lies on a detected real plane. The app measures its physical width and rejects blurry or featureless views automatically.
 4. Scan the Pringles and nearby items. Bundled on-device ML Kit text recognition and image labelling suggest the product name; the camera image is not uploaded.
 5. Aim at the exact point where the item touches its shelf or table and save it in the same map coordinate system.
 
