@@ -1,4 +1,11 @@
-# AisleVia native Android prototype v0.3
+# AisleVia native Android prototype v0.2.1
+
+## Crash-safety update
+
+- waits for camera permission before creating any AR view
+- captures the short-lived ARCore camera frame on the AR thread instead of retaining it inside background work
+- copies the camera pose before asynchronous image and map processing
+- records an unexpected crash locally and shows a copyable report after restart
 
 This is the native ARCore version of AisleVia. It is separate from the browser demo in the repository root.
 
@@ -7,12 +14,6 @@ This is the native ARCore version of AisleVia. It is separate from the browser d
 The first Android build could accept one landmark as a full room alignment. A false or badly scaled match could therefore place the red target and green route at the wrong pose. Landmark widths were also estimated rather than measured.
 
 Version 0.2 deliberately rejects maps made by that build.
-
-Version 0.3 automatically captures landmark and item-group frames after the
-detected surface remains stable. The capture check can use a narrower measured
-span on the same plane, so wall sections beside arches no longer require the
-entire frame to be one large detected plane. Mapping text is capped to prevent
-overlap on phones using larger font settings.
 
 ## One-time detailed mapping
 
