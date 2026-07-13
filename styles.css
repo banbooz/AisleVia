@@ -1,8 +1,8 @@
 :root {
   color-scheme: dark;
   --bg: #07131f;
-  --panel: rgba(5, 18, 31, 0.88);
-  --panel2: rgba(11, 31, 49, 0.94);
+  --panel: rgba(5, 18, 31, 0.90);
+  --panel2: rgba(11, 31, 49, 0.95);
   --line: rgba(255,255,255,.16);
   --text: #f5fbff;
   --muted: #adc4d5;
@@ -45,14 +45,21 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%; touch-action: non
 .bottomPanel { pointer-events: auto; position: absolute; left: 10px; right: 10px; bottom: max(10px, env(safe-area-inset-bottom)); border: 1px solid var(--line); border-radius: 22px; padding: 14px; background: var(--panel); backdrop-filter: blur(18px) saturate(1.3); box-shadow: 0 16px 60px rgba(0,0,0,.4); }
 .placementRow { display: flex; gap: 10px; align-items: center; }
 .reticleLegend { display: flex; gap: 9px; align-items: center; font-size: 13px; line-height: 1.3; color: #d9e8f2; flex: 1; }
-.reticleLegend span { flex: 0 0 auto; width: 18px; height: 18px; border: 3px solid var(--green); border-radius: 50%; box-shadow: 0 0 12px var(--green); }
-#finderPanel label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; font-weight: 850; margin-bottom: 7px; }
+.reticleLegend > span { flex: 0 0 auto; width: 18px; height: 18px; border: 3px solid var(--green); border-radius: 50%; box-shadow: 0 0 12px var(--green); }
+.finderHeading { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 7px; }
+#finderPanel label { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .1em; font-weight: 850; }
+.badge { font-size: 10px; padding: 5px 8px; border: 1px solid rgba(255,255,255,.13); border-radius: 999px; color: #ffdf9a; background: rgba(255,185,65,.10); }
+.badge.good { color: #a5ffd0; background: rgba(44,245,138,.10); border-color: rgba(44,245,138,.25); }
 .selectRow { display: flex; gap: 8px; }
 select { min-width: 0; flex: 1; background: var(--panel2); }
+.teachButton { width: 100%; margin-top: 9px; background: rgba(47,140,255,.15); border-color: rgba(79,160,255,.35); color: #dceeff; }
 .progress { height: 7px; margin: 12px 0 8px; background: rgba(255,255,255,.1); border-radius: 999px; overflow: hidden; }
 #progressBar { width: 0%; height: 100%; background: linear-gradient(90deg, var(--blue), var(--green)); border-radius: inherit; transition: width .25s ease; }
 .routeInfo { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 13px; }
 .routeInfo span { color: var(--muted); text-align: right; }
+.teachCopy { display: grid; gap: 4px; }
+.teachCopy span { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.actionRow { display: grid; grid-template-columns: 1fr 1.35fr; gap: 8px; margin-top: 12px; }
 details { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 9px; }
 summary { cursor: pointer; font-size: 12px; color: #d7e8f3; font-weight: 750; }
 .nudgeGrid { margin-top: 10px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 7px; }
@@ -64,7 +71,7 @@ summary { cursor: pointer; font-size: 12px; color: #d7e8f3; font-weight: 750; }
 .nudgeGrid button:nth-child(5) { grid-column: 3; }
 .nudgeGrid button:nth-child(6) { grid-column: 2 / span 2; }
 .nudgeGrid button:nth-child(7) { grid-column: 4 / span 2; }
-.toast { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); max-width: calc(100vw - 44px); background: rgba(3,12,20,.92); border: 1px solid var(--line); border-radius: 16px; padding: 13px 16px; font-size: 13px; text-align: center; box-shadow: 0 16px 50px rgba(0,0,0,.45); }
+.toast { position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); max-width: calc(100vw - 44px); background: rgba(3,12,20,.94); border: 1px solid var(--line); border-radius: 16px; padding: 13px 16px; font-size: 13px; text-align: center; box-shadow: 0 16px 50px rgba(0,0,0,.45); }
 @media (min-width: 720px) {
   .bottomPanel { left: 50%; right: auto; width: min(560px, calc(100vw - 24px)); transform: translateX(-50%); }
 }
