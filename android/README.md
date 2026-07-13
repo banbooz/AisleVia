@@ -1,34 +1,39 @@
-# AisleVia native Android prototype
+# AisleVia native Android prototype v0.2
 
-This is the first native ARCore version of AisleVia. It is separate from the browser demo in the repository root.
+This is the native ARCore version of AisleVia. It is separate from the browser demo in the repository root.
 
-## What it does
+## Why v0.2 remaps the room
 
-### One-time shop mapping
+The first Android build could accept one landmark as a full room alignment. A false or badly scaled match could therefore place the red target and green route at the wrong pose. Landmark widths were also estimated rather than measured.
 
-1. A staff member defines the entrance and forward direction once.
-2. The app captures three stable, textured landmarks: the parrot picture, fireplace surround and white bookcase.
-3. Each landmark image is saved with its pose inside the digital twin.
-4. The Pringles position is saved in the same map coordinate system.
+Version 0.2 deliberately rejects maps made by that build.
 
-### Automatic customer relocalisation
+## One-time detailed mapping
 
-1. The customer opens navigation and looks around briefly.
-2. ARCore compares the camera against the stored landmark images.
-3. Every recognised landmark produces a complete six-degree-of-freedom estimate for the digital twin.
-4. Recent estimates are fused and smoothed.
-5. ARCore keeps tracking while the customer walks, and visible landmarks continually correct drift.
-6. Green route markers and the red item highlight are rendered under the corrected map pose.
+1. Set the entrance and a forward floor point.
+2. Capture eight fixed references distributed around the room: picture, arch details, three fireplace views, bookcase and coffee-table front.
+3. Each capture must lie on a detected real plane. The app hit-tests both edges of the capture frame and measures its physical width automatically.
+4. Scan the Pringles and nearby items. Bundled on-device ML Kit text recognition and image labelling suggest the product name; the camera image is not uploaded.
+5. Aim at the exact point where the item touches its shelf or table and save it in the same map coordinate system.
 
-All map data and captured landmark images stay in the app's private on-device storage.
+In a real shop, use fixed textured shelf fronts, aisle signs, end-cap artwork and architectural details. Avoid moving stock displays and soft furniture as primary room references.
+
+## Confidence-gated navigation
+
+- A single image match never shows navigation.
+- At least three references from different parts of the map must produce poses that agree within strict translation and rotation limits.
+- Outlier matches are ignored.
+- The route and target are hidden when the last verified consensus becomes stale.
+- Route dots are smaller, capped at nine and start 65 cm in front of the phone.
+- The old large red sphere is replaced with a small item pin.
 
 ## Build
 
-Open the `android` folder in Android Studio and run the `app` configuration on an ARCore-supported Android phone. The repository workflow also builds a debug APK on each change under `android/`.
+Open the `android` folder in Android Studio and run the `app` configuration on an ARCore-supported Android phone. The repository workflow also builds a debug APK on changes under `android/`.
 
-## Important prototype limits
+## Prototype limits
 
-- The natural landmarks must be mostly planar, textured, well lit and physically fixed. Artwork, shelf signs, shelf fronts and architectural details are stronger than soft sofas or changing displays.
-- The first map still needs a staff setup pass. Customer sessions then relocalise automatically.
-- The living-room measurements are approximate. The mapping pass records real landmark and item positions, but the optional furniture debug overlay remains photo-estimated.
-- This is Android-first because native ARCore exposes the camera and Augmented Images pipeline needed for reliable relocalisation. The existing WebXR version remains available as a manual-alignment fallback.
+- Product recognition is a mapping assistant, not an unattended stock database. Staff must still point to the exact product position and should verify the suggested name.
+- ARCore Augmented Images work best with flat, textured, well-lit references. Product groups can be scanned together only when their visible fronts form a sufficiently flat reference view.
+- This prototype records one selected item after its group scan. The data model supports multiple items and visual reference IDs, but the multi-item catalogue editor is not built yet.
+- All map data, reference photos and ML processing stay on the phone.

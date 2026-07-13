@@ -42,7 +42,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.aislevia.app.ar.LandmarkRelocalizer
+import com.aislevia.app.ar.AlignmentQuality
 import com.aislevia.app.ar.PoseMath
+import com.aislevia.app.ar.ProductRecognizer
 import com.aislevia.app.data.StoreMapRepository
 import com.aislevia.app.model.ItemRecord
 import com.aislevia.app.model.LandmarkRecord
@@ -70,12 +72,11 @@ import kotlin.math.ceil
 import kotlin.math.sqrt
 
 private enum class AppPage { HOME, MAP, NAVIGATE }
-private enum class MapStep { ENTRANCE, DIRECTION, LANDMARKS, ITEM, COMPLETE }
+private enum class MapStep { ENTRANCE, DIRECTION, LANDMARKS, ITEM_GROUP, ITEM, COMPLETE }
 
 private data class LandmarkSpec(
     val id: String,
     val label: String,
-    val widthMetres: Float,
     val guidance: String
 )
 
@@ -83,20 +84,42 @@ private val landmarkSpecs = listOf(
     LandmarkSpec(
         id = "parrot-picture",
         label = "Parrot picture",
-        widthMetres = 0.66f,
         guidance = "Fill the frame with the parrot picture and hold the phone straight-on."
     ),
     LandmarkSpec(
-        id = "fireplace-surround",
-        label = "Fireplace surround",
-        widthMetres = 1.55f,
-        guidance = "Fill the frame with the marble fireplace surround."
+        id = "left-arch",
+        label = "Left arch detail",
+        guidance = "Frame the fixed wall and trim around the left arch. Avoid the curtain and sofa."
+    ),
+    LandmarkSpec(
+        id = "fireplace-left",
+        label = "Left fireplace detail",
+        guidance = "Frame the left marble edge and the fixed cabinet beside it."
+    ),
+    LandmarkSpec(
+        id = "fireplace-centre",
+        label = "Fireplace centre",
+        guidance = "Frame the mantel, black opening and surrounding marble together."
+    ),
+    LandmarkSpec(
+        id = "fireplace-right",
+        label = "Right fireplace detail",
+        guidance = "Frame the right marble edge and the fixed wall detail beside it."
+    ),
+    LandmarkSpec(
+        id = "right-arch",
+        label = "Right arch detail",
+        guidance = "Frame the fixed wall and trim around the right arch or TV-side opening."
     ),
     LandmarkSpec(
         id = "white-bookcase",
         label = "White bookcase",
-        widthMetres = 0.72f,
         guidance = "Fill the frame with the front of the white bookcase."
+    ),
+    LandmarkSpec(
+        id = "coffee-table-front",
+        label = "Coffee-table front",
+        guidance = "Frame the fixed front edge, drawer and openings of the coffee table."
     )
 )
 
@@ -164,6 +187,11 @@ private fun HomePage(
     onMap: () -> Unit,
     onNavigate: () -> Unit
 ) {
+    val mapReady = map != null &&
+        map.version >= 2 &&
+        map.landmarks.count { it.referenceType == "room" } >= landmarkSpecs.size &&
+        map.items.isNotEmpty()
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
@@ -186,14 +214,14 @@ private fun HomePage(
             ) {
                 Column(Modifier.padding(18.dp)) {
                     Text(
-                        if (map == null) "No digital twin saved" else map.name,
+                        if (!mapReady) "A new detailed map is required" else map?.name.orEmpty(),
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        if (map == null) {
-                            "Run the one-time mapping flow first."
+                        if (!mapReady) {
+                            "The old quick map is disabled because it can place markers incorrectly. Run the full scan once."
                         } else {
-                            "${map.landmarks.size} landmarks · ${map.items.size} item location(s)"
+                            "${map?.landmarks?.size ?: 0} landmarks · ${map?.items?.size ?: 0} item location(s)"
                         },
                         color = Color(0xFFAEC4D3)
                     )
@@ -202,12 +230,12 @@ private fun HomePage(
 
             Spacer(Modifier.height(18.dp))
             Button(onClick = onMap, modifier = Modifier.fillMaxWidth()) {
-                Text(if (map == null) "Map this room once" else "Remap this room")
+                Text(if (!mapReady) "Run full room and item scan" else "Remap this room")
             }
             Spacer(Modifier.height(10.dp))
             Button(
                 onClick = onNavigate,
-                enabled = map != null && map.landmarks.isNotEmpty() && map.items.isNotEmpty(),
+                enabled = mapReady,
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) {
@@ -228,6 +256,7 @@ private fun MappingPage(
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
     val runtimeDatabase = rememberRuntimeAugmentedImageDatabase()
+    val productRecognizer = remember { ProductRecognizer() }
     val latestFrame = remember { arrayOfNulls<Frame>(1) }
     val landmarks = remember { mutableStateListOf<LandmarkRecord>() }
     val items = remember { mutableStateListOf<ItemRecord>() }
@@ -239,6 +268,9 @@ private fun MappingPage(
     var landmarkIndex by remember { mutableIntStateOf(0) }
     var tracking by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
+    var itemGroupReferenceId by remember { mutableStateOf<String?>(null) }
+    var detectedItemName by remember { mutableStateOf("Pringles can") }
+    var detectedItemLabels by remember { mutableStateOf(emptyList<String>()) }
     var status by remember { mutableStateOf("Move the phone slowly so ARCore can map surfaces.") }
 
     LaunchedEffect(Unit) {
@@ -281,25 +313,28 @@ private fun MappingPage(
                 MapStep.ENTRANCE -> "1 · Set the entrance"
                 MapStep.DIRECTION -> "2 · Set the shop direction"
                 MapStep.LANDMARKS -> "3 · Capture ${landmarkSpecs[landmarkIndex].label}"
-                MapStep.ITEM -> "4 · Teach the Pringles position"
+                MapStep.ITEM_GROUP -> "4 · AI scan the item group"
+                MapStep.ITEM -> "5 · Confirm the exact item point"
                 MapStep.COMPLETE -> "Map complete"
             },
             instruction = when (step) {
                 MapStep.ENTRANCE -> "Aim at the floor where a customer enters."
                 MapStep.DIRECTION -> "Aim at the floor directly in front of the fireplace centre."
                 MapStep.LANDMARKS -> landmarkSpecs[landmarkIndex].guidance
-                MapStep.ITEM -> "Aim at the point where the Pringles can touches the coffee table."
+                MapStep.ITEM_GROUP -> "Frame the Pringles and nearby products together. The app reads visible names and saves this view as another reference."
+                MapStep.ITEM -> "AI suggestion: $detectedItemName. Aim at the exact point where this item touches the shelf or table."
                 MapStep.COMPLETE -> "Customer mode can now recognise the room without entrance points."
             },
             status = if (tracking) status else "Move the phone slowly until tracking starts.",
             onExit = onExit
         )
 
-        CentreGuide(showLandmarkFrame = step == MapStep.LANDMARKS)
+        CentreGuide(showLandmarkFrame = step == MapStep.LANDMARKS || step == MapStep.ITEM_GROUP)
 
         BottomActionPanel(
             caption = when (step) {
                 MapStep.LANDMARKS -> "Landmark ${landmarkIndex + 1} of ${landmarkSpecs.size}"
+                MapStep.ITEM_GROUP -> "On-device text and image recognition"
                 MapStep.COMPLETE -> "Saved ${landmarks.size} landmarks and ${items.size} item."
                 else -> "One-time staff setup"
             },
@@ -307,7 +342,8 @@ private fun MappingPage(
                 MapStep.ENTRANCE -> "Save entrance point"
                 MapStep.DIRECTION -> "Save room direction"
                 MapStep.LANDMARKS -> if (busy) "Processing…" else "Capture landmark"
-                MapStep.ITEM -> "Save Pringles position"
+                MapStep.ITEM_GROUP -> if (busy) "Analysing…" else "Scan this item group"
+                MapStep.ITEM -> "Save exact item position"
                 MapStep.COMPLETE -> "Finish mapping"
             },
             enabled = tracking && !busy,
@@ -347,9 +383,9 @@ private fun MappingPage(
 
                     MapStep.LANDMARKS -> {
                         val origin = worldFromMap
-                        val surfaceHit = centreHitPose(frame, viewport, horizontalOnly = false)
-                        if (origin == null || surfaceHit == null) {
-                            status = "No stable surface found at the landmark centre. Move side-to-side and retry."
+                        val measurement = framedPlaneMeasurement(frame, viewport)
+                        if (origin == null || measurement == null) {
+                            status = "The full frame is not on one stable surface. Scan it side-to-side, keep it flat in the frame and retry."
                             return@BottomActionPanel
                         }
 
@@ -369,21 +405,22 @@ private fun MappingPage(
                             when (val result = runtimeDatabase.addImage(
                                 name = spec.id,
                                 bitmap = bitmap,
-                                widthInMeters = spec.widthMetres
+                                widthInMeters = measurement.widthMetres
                             )) {
                                 is AddImageResult.Added -> {
                                     val imageFile = withContext(Dispatchers.IO) {
                                         repository.saveLandmarkBitmap(spec.id, bitmap)
                                     }
-                                    val worldImagePose = PoseMath.imageAlignedPose(surfaceHit, frame.camera.pose)
+                                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, frame.camera.pose)
                                     val mapImagePose = origin.inverse().compose(worldImagePose)
                                     landmarks.removeAll { it.id == spec.id }
                                     landmarks += LandmarkRecord(
                                         id = spec.id,
                                         name = spec.label,
                                         imageFile = imageFile,
-                                        physicalWidthMetres = spec.widthMetres,
-                                        mapPose = PoseRecord.fromPose(mapImagePose)
+                                        physicalWidthMetres = measurement.widthMetres,
+                                        mapPose = PoseRecord.fromPose(mapImagePose),
+                                        referenceType = "room"
                                     )
                                     repository.save(StoreMap(landmarks = landmarks.toList()))
 
@@ -391,8 +428,8 @@ private fun MappingPage(
                                         landmarkIndex += 1
                                         status = landmarkSpecs[landmarkIndex].guidance
                                     } else {
-                                        step = MapStep.ITEM
-                                        status = "Landmarks saved. Aim at the Pringles base on the table."
+                                        step = MapStep.ITEM_GROUP
+                                        status = "Room references saved. Now frame the Pringles and nearby products."
                                     }
                                 }
 
@@ -408,6 +445,74 @@ private fun MappingPage(
                         }
                     }
 
+                    MapStep.ITEM_GROUP -> {
+                        val origin = worldFromMap
+                        val measurement = framedPlaneMeasurement(frame, viewport)
+                        if (origin == null || measurement == null) {
+                            status = "The item group must fill one flat frame. Scan the shelf or table and retry."
+                            return@BottomActionPanel
+                        }
+
+                        busy = true
+                        status = "Reading product text and visual details on this phone…"
+                        scope.launch {
+                            val bitmap = withContext(Dispatchers.Default) {
+                                frame.captureCameraBitmap()?.let(::centreCrop)
+                            }
+                            if (bitmap == null) {
+                                status = "Camera image was not ready. Try again."
+                                busy = false
+                                return@launch
+                            }
+
+                            val referenceId = "item-group-1"
+                            when (val addResult = runtimeDatabase.addImage(
+                                name = referenceId,
+                                bitmap = bitmap,
+                                widthInMeters = measurement.widthMetres
+                            )) {
+                                is AddImageResult.Added -> {
+                                    val recognition = runCatching {
+                                        productRecognizer.recognise(bitmap)
+                                    }.getOrNull()
+                                    val imageFile = withContext(Dispatchers.IO) {
+                                        repository.saveLandmarkBitmap(referenceId, bitmap)
+                                    }
+                                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, frame.camera.pose)
+                                    val mapImagePose = origin.inverse().compose(worldImagePose)
+                                    detectedItemName = recognition?.suggestedName ?: "Pringles can"
+                                    detectedItemLabels = buildList {
+                                        addAll(recognition?.recognisedText.orEmpty())
+                                        addAll(recognition?.labels.orEmpty())
+                                    }.distinct().take(10)
+                                    itemGroupReferenceId = referenceId
+                                    landmarks.removeAll { it.id == referenceId }
+                                    landmarks += LandmarkRecord(
+                                        id = referenceId,
+                                        name = "$detectedItemName group",
+                                        imageFile = imageFile,
+                                        physicalWidthMetres = measurement.widthMetres,
+                                        mapPose = PoseRecord.fromPose(mapImagePose),
+                                        referenceType = "item-group",
+                                        recognitionLabels = detectedItemLabels
+                                    )
+                                    repository.save(StoreMap(landmarks = landmarks.toList()))
+                                    step = MapStep.ITEM
+                                    status = "Item group recognised. Now mark the exact base of $detectedItemName."
+                                }
+
+                                is AddImageResult.LowQuality -> {
+                                    status = "The group image has too little stable detail. Move closer, avoid glare and retry."
+                                }
+
+                                is AddImageResult.Error -> {
+                                    status = "Item scan failed: ${addResult.cause.message ?: "unknown error"}"
+                                }
+                            }
+                            busy = false
+                        }
+                    }
+
                     MapStep.ITEM -> {
                         val origin = worldFromMap
                         val itemHit = centreHitPose(frame, viewport, horizontalOnly = false)
@@ -417,8 +522,10 @@ private fun MappingPage(
                             items.clear()
                             items += ItemRecord(
                                 id = "pringles",
-                                name = "Pringles can",
-                                mapPose = PoseRecord.fromPose(origin.inverse().compose(itemHit))
+                                name = detectedItemName,
+                                mapPose = PoseRecord.fromPose(origin.inverse().compose(itemHit)),
+                                visualReferenceIds = listOfNotNull(itemGroupReferenceId),
+                                recognitionLabels = detectedItemLabels
                             )
                             repository.save(
                                 StoreMap(
@@ -449,15 +556,17 @@ private fun NavigationPage(
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
     val runtimeDatabase = rememberRuntimeAugmentedImageDatabase()
-    val relocalizer = remember(map) { LandmarkRelocalizer() }
+    val relocalizer = remember(map) {
+        LandmarkRelocalizer(minimumMatches = map.minimumLandmarksForLock.coerceAtLeast(3))
+    }
     val landmarkById = remember(map) { map.landmarks.associateBy { it.id } }
     val item = remember(map) { map.items.first() }
 
     var status by remember { mutableStateOf("Loading saved visual landmarks…") }
-    var worldFromMap by remember { mutableStateOf<Pose?>(null) }
+    var alignment by remember { mutableStateOf(relocalizer.snapshot) }
     var cameraInMap by remember { mutableStateOf<Pose?>(null) }
     var lastRouteUpdate by remember { mutableLongStateOf(0L) }
-    var previousVisibleCount by remember { mutableIntStateOf(-1) }
+    var previousAlignmentKey by remember { mutableStateOf("") }
 
     val greenMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xFF2CF58A), unlit = true)
@@ -465,8 +574,12 @@ private fun NavigationPage(
     val redMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xDDFF3159), unlit = true)
     }
-    val routeMarkers = remember(cameraInMap, item) {
-        buildRouteMarkers(cameraInMap, item.mapPose.toPose())
+    val routeMarkers = remember(cameraInMap, item, alignment.canRenderNavigation) {
+        if (alignment.canRenderNavigation) {
+            buildRouteMarkers(cameraInMap, item.mapPose.toPose())
+        } else {
+            emptyList()
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -523,7 +636,7 @@ private fun NavigationPage(
                         ) {
                             val record = landmarkById[image.name]
                             if (record != null) {
-                                worldFromMap = relocalizer.observe(
+                                alignment = relocalizer.observe(
                                     landmarkId = record.id,
                                     detectedWorldPose = image.centerPose,
                                     storedMapPose = record.mapPose.toPose()
@@ -532,27 +645,29 @@ private fun NavigationPage(
                         }
                     }
 
-                    relocalizer.tick()
-                    val visibleCount = relocalizer.visibleLandmarkCount
-                    if (visibleCount != previousVisibleCount) {
-                        previousVisibleCount = visibleCount
-                        status = when {
-                            worldFromMap == null ->
-                                "Pan across the picture, fireplace and bookcase to recognise this room."
-                            visibleCount >= 2 ->
-                                "Room locked with $visibleCount landmarks. Continuous drift correction is active."
-                            visibleCount == 1 ->
-                                "Room recognised. Looking for another landmark to strengthen alignment."
-                            else ->
-                                "Tracking from the last alignment. A landmark will correct any drift when it reappears."
+                    alignment = relocalizer.tick()
+                    val alignmentKey = "${alignment.quality}:${alignment.recentMatches}:${alignment.agreeingMatches}"
+                    if (alignmentKey != previousAlignmentKey) {
+                        previousAlignmentKey = alignmentKey
+                        status = when (alignment.quality) {
+                            AlignmentQuality.SEARCHING ->
+                                "Scan across the saved room details. No AR markers are shown until several references agree."
+                            AlignmentQuality.CHECKING ->
+                                "Checking ${alignment.recentMatches} match(es). Need ${map.minimumLandmarksForLock} agreeing references from different parts of the room."
+                            AlignmentQuality.LOCKED ->
+                                "Room verified by ${alignment.agreeingMatches} agreeing references. Drift correction is active."
+                            AlignmentQuality.STALE ->
+                                "Alignment confidence dropped. Markers are hidden; look at two or three saved details again."
                         }
                     }
 
-                    val mapTransform = worldFromMap
+                    val mapTransform = alignment.pose
                     val now = System.currentTimeMillis()
-                    if (mapTransform != null && now - lastRouteUpdate > 180L) {
+                    if (alignment.canRenderNavigation && mapTransform != null && now - lastRouteUpdate > 180L) {
                         cameraInMap = mapTransform.inverse().compose(frame.camera.pose)
                         lastRouteUpdate = now
+                    } else if (!alignment.canRenderNavigation) {
+                        cameraInMap = null
                     }
                 }
             },
@@ -562,22 +677,23 @@ private fun NavigationPage(
                 }
             }
         ) {
-            val mapTransform = worldFromMap
-            if (mapTransform != null) {
+            val mapTransform = alignment.pose
+            if (alignment.canRenderNavigation && mapTransform != null) {
                 PoseNode(pose = mapTransform) {
                     routeMarkers.forEach { point ->
                         CylinderNode(
-                            radius = 0.075f,
-                            height = 0.018f,
+                            radius = 0.045f,
+                            height = 0.010f,
                             position = point,
                             materialInstance = greenMaterial
                         )
                     }
 
                     val target = item.mapPose.toPose().translation
-                    SphereNode(
-                        radius = 0.22f,
-                        position = Position(target[0], target[1] + 0.22f, target[2]),
+                    CylinderNode(
+                        radius = 0.06f,
+                        height = 0.16f,
+                        position = Position(target[0], target[1] + 0.10f, target[2]),
                         materialInstance = redMaterial
                     )
                 }
@@ -585,9 +701,9 @@ private fun NavigationPage(
         }
 
         TopPanel(
-            title = if (worldFromMap == null) "Recognising this shop…" else "Finding ${item.name}",
-            instruction = if (worldFromMap == null) {
-                "Look around briefly. Customer mode does not need entrance or fireplace taps."
+            title = if (!alignment.canRenderNavigation) "Verifying this shop…" else "Finding ${item.name}",
+            instruction = if (!alignment.canRenderNavigation) {
+                "Look slowly across several fixed details. Navigation stays hidden until their poses agree."
             } else {
                 "Follow the separated green floor markers to the red item highlight."
             },
@@ -606,7 +722,7 @@ private fun NavigationPage(
             Column(Modifier.padding(16.dp)) {
                 Text(item.name, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (worldFromMap == null) "Waiting for a landmark match" else "Digital twin aligned",
+                    if (!alignment.canRenderNavigation) "Waiting for a reliable multi-reference lock" else "Digital twin verified",
                     color = Color(0xFFAEC4D3)
                 )
             }
@@ -690,6 +806,34 @@ private fun BottomActionPanel(
     }
 }
 
+private data class FramedPlaneMeasurement(
+    val centrePose: Pose,
+    val widthMetres: Float
+)
+
+/** Measures the exact width of the green capture frame instead of using guessed dimensions. */
+private fun framedPlaneMeasurement(frame: Frame, viewport: IntSize): FramedPlaneMeasurement? {
+    if (viewport.width <= 0 || viewport.height <= 0) return null
+    val y = viewport.height * 0.5f
+
+    fun planeHit(x: Float, requiredPlane: Plane? = null): Pair<Plane, Pose>? =
+        frame.hitTest(x, y)
+            .firstNotNullOfOrNull { hit ->
+                val plane = hit.trackable as? Plane ?: return@firstNotNullOfOrNull null
+                if (plane.trackingState != TrackingState.TRACKING) return@firstNotNullOfOrNull null
+                if (!plane.isPoseInPolygon(hit.hitPose)) return@firstNotNullOfOrNull null
+                if (requiredPlane != null && plane != requiredPlane) return@firstNotNullOfOrNull null
+                plane to hit.hitPose
+            }
+
+    val centre = planeHit(viewport.width * 0.50f) ?: return null
+    val left = planeHit(viewport.width * 0.16f, centre.first) ?: return null
+    val right = planeHit(viewport.width * 0.84f, centre.first) ?: return null
+    val width = PoseMath.translationDistance(left.second, right.second)
+    if (width !in 0.16f..3.5f) return null
+    return FramedPlaneMeasurement(centrePose = centre.second, widthMetres = width)
+}
+
 private fun centreHitPose(frame: Frame, viewport: IntSize, horizontalOnly: Boolean): Pose? {
     if (viewport.width <= 0 || viewport.height <= 0) return null
     return frame.hitTest(viewport.width / 2f, viewport.height / 2f)
@@ -718,11 +862,20 @@ private fun buildRouteMarkers(cameraInMap: Pose?, itemPose: Pose): List<Position
     val dx = end[0] - start[0]
     val dz = end[2] - start[2]
     val distance = sqrt(dx * dx + dz * dz)
-    if (distance < 0.25f) return emptyList()
+    if (distance < 0.9f) return emptyList()
 
-    val count = ceil(distance / 0.45f).toInt().coerceIn(1, 12)
-    return (1..count).map { index ->
-        val fraction = index.toFloat() / (count + 1).toFloat()
+    val startClearance = 0.65f
+    val endClearance = 0.30f
+    val usableDistance = distance - startClearance - endClearance
+    if (usableDistance <= 0f) return emptyList()
+    val count = ceil(usableDistance / 0.55f).toInt().coerceIn(1, 9)
+    return (0 until count).map { index ->
+        val distanceAlongRoute = if (count == 1) {
+            startClearance + usableDistance * 0.5f
+        } else {
+            startClearance + usableDistance * index.toFloat() / (count - 1).toFloat()
+        }
+        val fraction = distanceAlongRoute / distance
         Position(
             x = start[0] + dx * fraction,
             y = 0.035f,

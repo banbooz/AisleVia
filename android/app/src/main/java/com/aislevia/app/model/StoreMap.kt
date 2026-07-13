@@ -33,20 +33,25 @@ data class LandmarkRecord(
     val name: String,
     val imageFile: String,
     val physicalWidthMetres: Float,
-    val mapPose: PoseRecord
+    val mapPose: PoseRecord,
+    val referenceType: String = "room",
+    val recognitionLabels: List<String> = emptyList()
 )
 
 @Serializable
 data class ItemRecord(
     val id: String,
     val name: String,
-    val mapPose: PoseRecord
+    val mapPose: PoseRecord,
+    val visualReferenceIds: List<String> = emptyList(),
+    val recognitionLabels: List<String> = emptyList()
 )
 
 @Serializable
 data class StoreMap(
-    val version: Int = 1,
+    val version: Int = 2,
     val name: String = "Living-room proof shop",
     val landmarks: List<LandmarkRecord> = emptyList(),
-    val items: List<ItemRecord> = emptyList()
+    val items: List<ItemRecord> = emptyList(),
+    val minimumLandmarksForLock: Int = 3
 )

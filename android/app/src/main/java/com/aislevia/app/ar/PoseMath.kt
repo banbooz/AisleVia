@@ -1,6 +1,9 @@
 package com.aislevia.app.ar
 
 import com.google.ar.core.Pose
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.acos
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -93,6 +96,24 @@ object PoseMath {
         val dx = at[0] - bt[0]
         val dz = at[2] - bt[2]
         return sqrt(dx * dx + dz * dz)
+    }
+
+    fun translationDistance(a: Pose, b: Pose): Float {
+        val at = a.translation
+        val bt = b.translation
+        val dx = at[0] - bt[0]
+        val dy = at[1] - bt[1]
+        val dz = at[2] - bt[2]
+        return sqrt(dx * dx + dy * dy + dz * dz)
+    }
+
+    fun rotationDistanceDegrees(a: Pose, b: Pose): Float {
+        val aq = a.rotationQuaternion
+        val bq = b.rotationQuaternion
+        val dot = abs(
+            aq[0] * bq[0] + aq[1] * bq[1] + aq[2] * bq[2] + aq[3] * bq[3]
+        ).coerceIn(0f, 1f)
+        return (2.0 * acos(dot.toDouble()) * 180.0 / PI).toFloat()
     }
 
     private fun quaternionFromBasis(x: FloatArray, y: FloatArray, z: FloatArray): FloatArray {
