@@ -1,4 +1,11 @@
-# AisleVia native Android prototype v0.3
+# AisleVia native Android prototype v0.3.1
+
+## Crash-safety update
+
+- waits for camera permission before creating any AR view
+- captures the short-lived ARCore camera frame on the AR thread instead of retaining it inside background work
+- copies the camera pose before asynchronous image and map processing
+- records an unexpected crash locally and shows a copyable report after restart
 
 This is the native ARCore version of AisleVia. It is separate from the browser demo in the repository root.
 
@@ -15,7 +22,6 @@ entire frame to be one large detected plane. Mapping text is capped to prevent
 overlap on phones using larger font settings.
 
 ## One-time detailed mapping
-
 1. Set the entrance and a forward floor point.
 2. Capture eight fixed references distributed around the room: picture, arch details, three fireplace views, bookcase and coffee-table front.
 3. Each capture must lie on a detected real plane. The app hit-tests both edges of the capture frame and measures its physical width automatically.

@@ -291,19 +291,19 @@ private fun MappingPage(
     fun captureRoomReference(frame: Frame, measurement: FramedPlaneMeasurement) {
         val origin = worldFromMap ?: return
         val spec = landmarkSpecs[landmarkIndex]
+        val cameraPose = frame.camera.pose
+        val bitmap = runCatching {
+            frame.captureCameraBitmap()?.let(::centreCrop)
+        }.getOrNull()
+        if (bitmap == null) {
+            status = "Camera image was not ready. Hold the frame still again."
+            resetAutomaticCapture()
+            return
+        }
         busy = true
         resetAutomaticCapture()
         status = "Capturing ${spec.label} automatically…"
         scope.launch {
-            val bitmap = withContext(Dispatchers.Default) {
-                frame.captureCameraBitmap()?.let(::centreCrop)
-            }
-            if (bitmap == null) {
-                status = "Camera image was not ready. Hold the frame still again."
-                busy = false
-                return@launch
-            }
-
             when (val result = runtimeDatabase.addImage(
                 name = spec.id,
                 bitmap = bitmap,
@@ -313,7 +313,7 @@ private fun MappingPage(
                     val imageFile = withContext(Dispatchers.IO) {
                         repository.saveLandmarkBitmap(spec.id, bitmap)
                     }
-                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, frame.camera.pose)
+                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, cameraPose)
                     val mapImagePose = origin.inverse().compose(worldImagePose)
                     landmarks.removeAll { it.id == spec.id }
                     landmarks += LandmarkRecord(
@@ -349,19 +349,19 @@ private fun MappingPage(
 
     fun captureItemGroupReference(frame: Frame, measurement: FramedPlaneMeasurement) {
         val origin = worldFromMap ?: return
+        val cameraPose = frame.camera.pose
+        val bitmap = runCatching {
+            frame.captureCameraBitmap()?.let(::centreCrop)
+        }.getOrNull()
+        if (bitmap == null) {
+            status = "Camera image was not ready. Hold the frame still again."
+            resetAutomaticCapture()
+            return
+        }
         busy = true
         resetAutomaticCapture()
         status = "Reading the product group on this phone…"
         scope.launch {
-            val bitmap = withContext(Dispatchers.Default) {
-                frame.captureCameraBitmap()?.let(::centreCrop)
-            }
-            if (bitmap == null) {
-                status = "Camera image was not ready. Hold the frame still again."
-                busy = false
-                return@launch
-            }
-
             val referenceId = "item-group-1"
             when (val result = runtimeDatabase.addImage(
                 name = referenceId,
@@ -373,7 +373,7 @@ private fun MappingPage(
                     val imageFile = withContext(Dispatchers.IO) {
                         repository.saveLandmarkBitmap(referenceId, bitmap)
                     }
-                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, frame.camera.pose)
+                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, cameraPose)
                     val mapImagePose = origin.inverse().compose(worldImagePose)
                     detectedItemName = recognition?.suggestedName ?: "Pringles can"
                     detectedItemLabels = buildList {
