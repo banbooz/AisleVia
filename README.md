@@ -1,41 +1,29 @@
-# AisleVia AR — living-room proof of concept
+# AisleVia AR — living-room proof of concept v2
 
-A browser-based augmented-reality prototype that uses a living room as a pretend shop. It places route arrows on the real floor, adds a vertical guide at the destination, and draws a pulsing red 3D highlight around the selected item.
+A browser-based augmented-reality prototype that treats a living room as a pretend shop. It aligns a photo-built digital twin to the real room, places route arrows on the floor, and highlights a selected item.
 
-## What it demonstrates
+## What changed in v2
 
-- WebXR phone tracking during an AR session
-- Floor detection through WebXR hit testing
-- Doorway calibration while facing the fireplace
-- A route that updates as the user walks
-- Green floor arrows in room-scale coordinates
-- Vertical item guidance and a red target highlight
-- Fine alignment controls because the current measurements were estimated from photos
+- Two-point room alignment: doorway floor plus the carpet in front of the fireplace
+- Direction and scale are calculated from those two real-world points
+- Smaller, capped route arrows to prevent overlapping arrow boxes
+- A simpler red target ring instead of the oversized three-axis target
+- **Teach exact item spot** mode so a photo-estimated target can be corrected and saved on the phone
+- Learned item coordinates are stored in browser `localStorage`
 
-## Run it on a phone
+## Test it
 
-The app must be served through HTTPS. GitHub Pages can provide that.
+Open the GitHub Pages site in Chrome on an ARCore-supported Android phone.
 
-1. Open this repository's **Settings**.
-2. Open **Pages**.
-3. Under **Build and deployment**, select **Deploy from a branch**.
-4. Choose the `main` branch and `/ (root)`, then save.
-5. Open the Pages address in Chrome on an ARCore-supported Android phone.
-6. Allow camera permission and tap **Start tracked AR**.
-7. Stand in the living-room doorway, face the fireplace, slowly scan the carpet, and place the entrance marker on the doorway floor.
+1. Tap **Start room-aligned AR**.
+2. Slowly scan the carpet.
+3. Place the first point on the doorway floor.
+4. Place the second point on the carpet directly in front of the centre of the fireplace.
+5. Select an item.
+6. If the highlight is not exact, tap **Teach exact item spot**, aim at the base of the real item, and save.
 
-The app imports Three.js from jsDelivr, so the phone needs an internet connection when the page first loads.
+## Important limitation
 
-## Calibration
+This version aligns the digital twin with two user-supplied reference points. It does not yet perform automatic visual relocalisation from the photographs. True automatic room recognition would require a visual feature map from a LiDAR/photogrammetry scan, a persistent spatial-anchor service, or a fixed visual marker in the room.
 
-The room geometry was inferred from photographs and is not survey-grade. After placing the entrance, use **Fine-tune alignment** to move or rotate the digital map until the Pringles can, television, bookcase, or remote highlights line up with the real objects.
-
-For a production-quality version, replace the estimated coordinates with measurements, a LiDAR scan, or photogrammetry, and use stable visual anchors or store markers for repeatable relocalisation.
-
-## Current limitations
-
-- The map is anchored only for the current AR session.
-- Real furniture does not occlude the virtual graphics in this web prototype.
-- Browser support varies; this build targets WebXR on supported Android Chrome devices.
-- Item coordinates are approximate and based on the supplied photos.
-- Camera frames are processed by the phone's XR system and are not uploaded by this code.
+Camera frames are handled by the phone's XR system and are not uploaded by this code.
