@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.aislevia.app.ar.LandmarkRelocalizer
@@ -68,6 +69,7 @@ import io.github.sceneview.rememberModelLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.sqrt
 
@@ -272,9 +274,138 @@ private fun MappingPage(
     var detectedItemName by remember { mutableStateOf("Pringles can") }
     var detectedItemLabels by remember { mutableStateOf(emptyList<String>()) }
     var status by remember { mutableStateOf("Move the phone slowly so ARCore can map surfaces.") }
+    var stableCaptureFrames by remember { mutableIntStateOf(0) }
+    var previousCapturePose by remember { mutableStateOf<Pose?>(null) }
+    var previousCaptureWidth by remember { mutableStateOf<Float?>(null) }
 
     LaunchedEffect(Unit) {
         repository.clear()
+    }
+
+    fun resetAutomaticCapture() {
+        stableCaptureFrames = 0
+        previousCapturePose = null
+        previousCaptureWidth = null
+    }
+
+    fun captureRoomReference(frame: Frame, measurement: FramedPlaneMeasurement) {
+        val origin = worldFromMap ?: return
+        val spec = landmarkSpecs[landmarkIndex]
+        busy = true
+        resetAutomaticCapture()
+        status = "Capturing ${spec.label} automatically…"
+        scope.launch {
+            val bitmap = withContext(Dispatchers.Default) {
+                frame.captureCameraBitmap()?.let(::centreCrop)
+            }
+            if (bitmap == null) {
+                status = "Camera image was not ready. Hold the frame still again."
+                busy = false
+                return@launch
+            }
+
+            when (val result = runtimeDatabase.addImage(
+                name = spec.id,
+                bitmap = bitmap,
+                widthInMeters = measurement.widthMetres
+            )) {
+                is AddImageResult.Added -> {
+                    val imageFile = withContext(Dispatchers.IO) {
+                        repository.saveLandmarkBitmap(spec.id, bitmap)
+                    }
+                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, frame.camera.pose)
+                    val mapImagePose = origin.inverse().compose(worldImagePose)
+                    landmarks.removeAll { it.id == spec.id }
+                    landmarks += LandmarkRecord(
+                        id = spec.id,
+                        name = spec.label,
+                        imageFile = imageFile,
+                        physicalWidthMetres = measurement.widthMetres,
+                        mapPose = PoseRecord.fromPose(mapImagePose),
+                        referenceType = "room"
+                    )
+                    repository.save(StoreMap(landmarks = landmarks.toList()))
+
+                    if (landmarkIndex < landmarkSpecs.lastIndex) {
+                        landmarkIndex += 1
+                        status = "Saved. Move to ${landmarkSpecs[landmarkIndex].label}."
+                    } else {
+                        step = MapStep.ITEM_GROUP
+                        status = "Room saved. Frame the Pringles and nearby products."
+                    }
+                }
+
+                is AddImageResult.LowQuality -> {
+                    status = "Not enough visual detail. Move closer and hold still again."
+                }
+
+                is AddImageResult.Error -> {
+                    status = "Capture failed: ${result.cause.message ?: "unknown error"}"
+                }
+            }
+            busy = false
+        }
+    }
+
+    fun captureItemGroupReference(frame: Frame, measurement: FramedPlaneMeasurement) {
+        val origin = worldFromMap ?: return
+        busy = true
+        resetAutomaticCapture()
+        status = "Reading the product group on this phone…"
+        scope.launch {
+            val bitmap = withContext(Dispatchers.Default) {
+                frame.captureCameraBitmap()?.let(::centreCrop)
+            }
+            if (bitmap == null) {
+                status = "Camera image was not ready. Hold the frame still again."
+                busy = false
+                return@launch
+            }
+
+            val referenceId = "item-group-1"
+            when (val result = runtimeDatabase.addImage(
+                name = referenceId,
+                bitmap = bitmap,
+                widthInMeters = measurement.widthMetres
+            )) {
+                is AddImageResult.Added -> {
+                    val recognition = runCatching { productRecognizer.recognise(bitmap) }.getOrNull()
+                    val imageFile = withContext(Dispatchers.IO) {
+                        repository.saveLandmarkBitmap(referenceId, bitmap)
+                    }
+                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, frame.camera.pose)
+                    val mapImagePose = origin.inverse().compose(worldImagePose)
+                    detectedItemName = recognition?.suggestedName ?: "Pringles can"
+                    detectedItemLabels = buildList {
+                        addAll(recognition?.recognisedText.orEmpty())
+                        addAll(recognition?.labels.orEmpty())
+                    }.distinct().take(10)
+                    itemGroupReferenceId = referenceId
+                    landmarks.removeAll { it.id == referenceId }
+                    landmarks += LandmarkRecord(
+                        id = referenceId,
+                        name = "$detectedItemName group",
+                        imageFile = imageFile,
+                        physicalWidthMetres = measurement.widthMetres,
+                        mapPose = PoseRecord.fromPose(mapImagePose),
+                        referenceType = "item-group",
+                        recognitionLabels = detectedItemLabels
+                    )
+                    repository.save(StoreMap(landmarks = landmarks.toList()))
+                    step = MapStep.ITEM
+                    status = "Group recognised. Point at the exact base of $detectedItemName."
+                }
+
+                is AddImageResult.LowQuality -> {
+                    status = "Not enough stable product detail. Move closer and hold still again."
+                }
+
+                is AddImageResult.Error -> {
+                    status = "Item scan failed: ${result.cause.message ?: "unknown error"}"
+                }
+            }
+            busy = false
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -300,6 +431,36 @@ private fun MappingPage(
             onSessionUpdated = { _, frame ->
                 latestFrame[0] = frame
                 tracking = frame.camera.trackingState == TrackingState.TRACKING
+                val automaticStep = step == MapStep.LANDMARKS || step == MapStep.ITEM_GROUP
+                if (tracking && automaticStep && !busy && viewport != IntSize.Zero) {
+                    val measurement = framedPlaneMeasurement(frame, viewport)
+                    if (measurement == null) {
+                        resetAutomaticCapture()
+                        status = "Move slowly across the surface until the frame turns ready."
+                    } else {
+                        val previousPose = previousCapturePose
+                        val previousWidth = previousCaptureWidth
+                        val stable = previousPose != null && previousWidth != null &&
+                            PoseMath.translationDistance(previousPose, measurement.centrePose) < 0.045f &&
+                            abs(previousWidth - measurement.widthMetres) < 0.055f
+
+                        stableCaptureFrames = if (stable) stableCaptureFrames + 1 else 1
+                        previousCapturePose = measurement.centrePose
+                        previousCaptureWidth = measurement.widthMetres
+                        val progress = (stableCaptureFrames * 100 / 18).coerceIn(5, 100)
+                        status = "Surface found · hold still · $progress%"
+
+                        if (stableCaptureFrames >= 18) {
+                            when (step) {
+                                MapStep.LANDMARKS -> captureRoomReference(frame, measurement)
+                                MapStep.ITEM_GROUP -> captureItemGroupReference(frame, measurement)
+                                else -> Unit
+                            }
+                        }
+                    }
+                } else if (!automaticStep) {
+                    resetAutomaticCapture()
+                }
             },
             onTrackingFailureChanged = { reason ->
                 if (reason != null) {
@@ -321,8 +482,8 @@ private fun MappingPage(
                 MapStep.ENTRANCE -> "Aim at the floor where a customer enters."
                 MapStep.DIRECTION -> "Aim at the floor directly in front of the fireplace centre."
                 MapStep.LANDMARKS -> landmarkSpecs[landmarkIndex].guidance
-                MapStep.ITEM_GROUP -> "Frame the Pringles and nearby products together. The app reads visible names and saves this view as another reference."
-                MapStep.ITEM -> "AI suggestion: $detectedItemName. Aim at the exact point where this item touches the shelf or table."
+                MapStep.ITEM_GROUP -> "Frame the Pringles and nearby products. Hold still when the surface is found."
+                MapStep.ITEM -> "AI suggestion: $detectedItemName. Aim at the item's exact base."
                 MapStep.COMPLETE -> "Customer mode can now recognise the room without entrance points."
             },
             status = if (tracking) status else "Move the phone slowly until tracking starts.",
@@ -333,8 +494,8 @@ private fun MappingPage(
 
         BottomActionPanel(
             caption = when (step) {
-                MapStep.LANDMARKS -> "Landmark ${landmarkIndex + 1} of ${landmarkSpecs.size}"
-                MapStep.ITEM_GROUP -> "On-device text and image recognition"
+                MapStep.LANDMARKS -> "Landmark ${landmarkIndex + 1}/${landmarkSpecs.size} · automatic capture"
+                MapStep.ITEM_GROUP -> "AI item scan · automatic capture"
                 MapStep.COMPLETE -> "Saved ${landmarks.size} landmarks and ${items.size} item."
                 else -> "One-time staff setup"
             },
@@ -347,6 +508,7 @@ private fun MappingPage(
                 MapStep.COMPLETE -> "Finish mapping"
             },
             enabled = tracking && !busy,
+            showButton = step != MapStep.LANDMARKS && step != MapStep.ITEM_GROUP,
             onClick = {
                 val frame = latestFrame[0]
                 if (frame == null || viewport == IntSize.Zero) {
@@ -382,135 +544,15 @@ private fun MappingPage(
                     }
 
                     MapStep.LANDMARKS -> {
-                        val origin = worldFromMap
                         val measurement = framedPlaneMeasurement(frame, viewport)
-                        if (origin == null || measurement == null) {
-                            status = "The full frame is not on one stable surface. Scan it side-to-side, keep it flat in the frame and retry."
-                            return@BottomActionPanel
-                        }
-
-                        val spec = landmarkSpecs[landmarkIndex]
-                        busy = true
-                        status = "Extracting visual features from ${spec.label}…"
-                        scope.launch {
-                            val bitmap = withContext(Dispatchers.Default) {
-                                frame.captureCameraBitmap()?.let(::centreCrop)
-                            }
-                            if (bitmap == null) {
-                                status = "Camera image was not ready. Try again."
-                                busy = false
-                                return@launch
-                            }
-
-                            when (val result = runtimeDatabase.addImage(
-                                name = spec.id,
-                                bitmap = bitmap,
-                                widthInMeters = measurement.widthMetres
-                            )) {
-                                is AddImageResult.Added -> {
-                                    val imageFile = withContext(Dispatchers.IO) {
-                                        repository.saveLandmarkBitmap(spec.id, bitmap)
-                                    }
-                                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, frame.camera.pose)
-                                    val mapImagePose = origin.inverse().compose(worldImagePose)
-                                    landmarks.removeAll { it.id == spec.id }
-                                    landmarks += LandmarkRecord(
-                                        id = spec.id,
-                                        name = spec.label,
-                                        imageFile = imageFile,
-                                        physicalWidthMetres = measurement.widthMetres,
-                                        mapPose = PoseRecord.fromPose(mapImagePose),
-                                        referenceType = "room"
-                                    )
-                                    repository.save(StoreMap(landmarks = landmarks.toList()))
-
-                                    if (landmarkIndex < landmarkSpecs.lastIndex) {
-                                        landmarkIndex += 1
-                                        status = landmarkSpecs[landmarkIndex].guidance
-                                    } else {
-                                        step = MapStep.ITEM_GROUP
-                                        status = "Room references saved. Now frame the Pringles and nearby products."
-                                    }
-                                }
-
-                                is AddImageResult.LowQuality -> {
-                                    status = "Too little stable detail. Move closer, avoid glare and keep the landmark inside the frame."
-                                }
-
-                                is AddImageResult.Error -> {
-                                    status = "Capture failed: ${result.cause.message ?: "unknown error"}"
-                                }
-                            }
-                            busy = false
-                        }
+                        if (measurement == null) status = "Keep scanning the surface; capture is automatic."
+                        else captureRoomReference(frame, measurement)
                     }
 
                     MapStep.ITEM_GROUP -> {
-                        val origin = worldFromMap
                         val measurement = framedPlaneMeasurement(frame, viewport)
-                        if (origin == null || measurement == null) {
-                            status = "The item group must fill one flat frame. Scan the shelf or table and retry."
-                            return@BottomActionPanel
-                        }
-
-                        busy = true
-                        status = "Reading product text and visual details on this phone…"
-                        scope.launch {
-                            val bitmap = withContext(Dispatchers.Default) {
-                                frame.captureCameraBitmap()?.let(::centreCrop)
-                            }
-                            if (bitmap == null) {
-                                status = "Camera image was not ready. Try again."
-                                busy = false
-                                return@launch
-                            }
-
-                            val referenceId = "item-group-1"
-                            when (val addResult = runtimeDatabase.addImage(
-                                name = referenceId,
-                                bitmap = bitmap,
-                                widthInMeters = measurement.widthMetres
-                            )) {
-                                is AddImageResult.Added -> {
-                                    val recognition = runCatching {
-                                        productRecognizer.recognise(bitmap)
-                                    }.getOrNull()
-                                    val imageFile = withContext(Dispatchers.IO) {
-                                        repository.saveLandmarkBitmap(referenceId, bitmap)
-                                    }
-                                    val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, frame.camera.pose)
-                                    val mapImagePose = origin.inverse().compose(worldImagePose)
-                                    detectedItemName = recognition?.suggestedName ?: "Pringles can"
-                                    detectedItemLabels = buildList {
-                                        addAll(recognition?.recognisedText.orEmpty())
-                                        addAll(recognition?.labels.orEmpty())
-                                    }.distinct().take(10)
-                                    itemGroupReferenceId = referenceId
-                                    landmarks.removeAll { it.id == referenceId }
-                                    landmarks += LandmarkRecord(
-                                        id = referenceId,
-                                        name = "$detectedItemName group",
-                                        imageFile = imageFile,
-                                        physicalWidthMetres = measurement.widthMetres,
-                                        mapPose = PoseRecord.fromPose(mapImagePose),
-                                        referenceType = "item-group",
-                                        recognitionLabels = detectedItemLabels
-                                    )
-                                    repository.save(StoreMap(landmarks = landmarks.toList()))
-                                    step = MapStep.ITEM
-                                    status = "Item group recognised. Now mark the exact base of $detectedItemName."
-                                }
-
-                                is AddImageResult.LowQuality -> {
-                                    status = "The group image has too little stable detail. Move closer, avoid glare and retry."
-                                }
-
-                                is AddImageResult.Error -> {
-                                    status = "Item scan failed: ${addResult.cause.message ?: "unknown error"}"
-                                }
-                            }
-                            busy = false
-                        }
+                        if (measurement == null) status = "Keep scanning the product group; capture is automatic."
+                        else captureItemGroupReference(frame, measurement)
                     }
 
                     MapStep.ITEM -> {
@@ -750,12 +792,32 @@ private fun TopPanel(
             verticalAlignment = Alignment.Top
         ) {
             Column(Modifier.weight(1f)) {
-                Text(title, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.titleMedium)
-                Text(instruction, color = Color.White)
+                Text(
+                    title,
+                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    instruction,
+                    color = Color.White,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
                 Spacer(Modifier.height(5.dp))
-                Text(status, color = Color(0xFFB8CBD8), style = MaterialTheme.typography.bodySmall)
+                Text(
+                    status,
+                    color = Color(0xFFB8CBD8),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
-            OutlinedButton(onClick = onExit) { Text("Exit") }
+            OutlinedButton(onClick = onExit) {
+                Text("Exit", maxLines = 1)
+            }
         }
     }
 }
@@ -787,6 +849,7 @@ private fun BottomActionPanel(
     caption: String,
     buttonText: String,
     enabled: Boolean,
+    showButton: Boolean = true,
     onClick: () -> Unit
 ) {
     Surface(
@@ -797,10 +860,18 @@ private fun BottomActionPanel(
         shape = RoundedCornerShape(22.dp)
     ) {
         Column(Modifier.padding(16.dp)) {
-            Text(caption, color = Color(0xFFAEC4D3), style = MaterialTheme.typography.labelMedium)
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
-                Text(buttonText)
+            Text(
+                caption,
+                color = Color(0xFFAEC4D3),
+                style = MaterialTheme.typography.labelMedium,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (showButton) {
+                Spacer(Modifier.height(8.dp))
+                Button(onClick = onClick, enabled = enabled, modifier = Modifier.fillMaxWidth()) {
+                    Text(buttonText, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
             }
         }
     }
@@ -811,7 +882,7 @@ private data class FramedPlaneMeasurement(
     val widthMetres: Float
 )
 
-/** Measures the exact width of the green capture frame instead of using guessed dimensions. */
+/** Measures the frame from any stable span on the same detected plane. */
 private fun framedPlaneMeasurement(frame: Frame, viewport: IntSize): FramedPlaneMeasurement? {
     if (viewport.width <= 0 || viewport.height <= 0) return null
     val y = viewport.height * 0.5f
@@ -827,9 +898,18 @@ private fun framedPlaneMeasurement(frame: Frame, viewport: IntSize): FramedPlane
             }
 
     val centre = planeHit(viewport.width * 0.50f) ?: return null
-    val left = planeHit(viewport.width * 0.16f, centre.first) ?: return null
-    val right = planeHit(viewport.width * 0.84f, centre.first) ?: return null
-    val width = PoseMath.translationDistance(left.second, right.second)
+    val sampleFractions = listOf(0.16f, 0.28f, 0.40f, 0.50f, 0.60f, 0.72f, 0.84f)
+    val samples = sampleFractions.mapNotNull { fraction ->
+        planeHit(viewport.width * fraction, centre.first)?.let { fraction to it.second }
+    }
+    if (samples.size < 2) return null
+
+    val left = samples.minBy { it.first }
+    val right = samples.maxBy { it.first }
+    val detectedScreenSpan = right.first - left.first
+    if (detectedScreenSpan < 0.10f) return null
+    val detectedWidth = PoseMath.translationDistance(left.second, right.second)
+    val width = detectedWidth * (0.68f / detectedScreenSpan)
     if (width !in 0.16f..3.5f) return null
     return FramedPlaneMeasurement(centrePose = centre.second, widthMetres = width)
 }
