@@ -52,16 +52,18 @@ import com.aislevia.app.model.LandmarkRecord
 import com.aislevia.app.model.PoseRecord
 import com.aislevia.app.model.StoreMap
 import com.google.ar.core.AugmentedImage
+import com.google.ar.core.AugmentedImageDatabase
 import com.google.ar.core.Config
 import com.google.ar.core.Frame
 import com.google.ar.core.Plane
 import com.google.ar.core.Pose
 import com.google.ar.core.Session
 import com.google.ar.core.TrackingState
+import com.google.ar.core.exceptions.ImageInsufficientQualityException
 import io.github.sceneview.ar.ARSceneView
 import io.github.sceneview.ar.arcore.AddImageResult
 import io.github.sceneview.ar.arcore.captureCameraBitmap
-import io.github.sceneview.ar.arcore.rememberRuntimeAugmentedImageDatabase
+import io.github.sceneview.ar.arcore.configure
 import io.github.sceneview.math.Position
 import io.github.sceneview.rememberEngine
 import io.github.sceneview.rememberMaterialLoader
@@ -69,7 +71,6 @@ import io.github.sceneview.rememberModelLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.yield
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.sqrt
@@ -77,51 +78,18 @@ import kotlin.math.sqrt
 private enum class AppPage { HOME, MAP, NAVIGATE }
 private enum class MapStep { ENTRANCE, DIRECTION, LANDMARKS, ITEM_GROUP, ITEM, COMPLETE }
 
-private data class LandmarkSpec(
-    val id: String,
-    val label: String,
-    val guidance: String
-)
-
 private const val requiredNavigationMatches = 2
 private const val maximumReferenceImageEdge = 768
+private const val targetRoomKeyframes = 30
+private const val minimumRoomKeyframes = 6
+private const val automaticCaptureStableFrames = 6
+private const val minimumKeyframeRotationDegrees = 8f
+private const val minimumKeyframeTranslationMetres = 0.18f
+private const val customerRecognitionWindowMillis = 5_000L
 
 // Older v0.3 maps contain three overlapping fireplace crops. Keeping the centre
 // view avoids making ARCore distinguish nearly identical images from one wall.
 private val redundantNavigationLandmarkIds = setOf("fireplace-left", "fireplace-right")
-
-private val landmarkSpecs = listOf(
-    LandmarkSpec(
-        id = "parrot-picture",
-        label = "Parrot picture",
-        guidance = "Fill the frame with the parrot picture and hold the phone straight-on."
-    ),
-    LandmarkSpec(
-        id = "left-arch",
-        label = "Left arch detail",
-        guidance = "Frame the fixed wall and trim around the left arch. Avoid the curtain and sofa."
-    ),
-    LandmarkSpec(
-        id = "fireplace-centre",
-        label = "Fireplace centre",
-        guidance = "Frame the mantel, black opening and surrounding marble together."
-    ),
-    LandmarkSpec(
-        id = "right-arch",
-        label = "Right arch detail",
-        guidance = "Frame the fixed wall and trim around the right arch or TV-side opening."
-    ),
-    LandmarkSpec(
-        id = "white-bookcase",
-        label = "White bookcase",
-        guidance = "Fill the frame with the front of the white bookcase."
-    ),
-    LandmarkSpec(
-        id = "coffee-table-front",
-        label = "Coffee-table front",
-        guidance = "Frame the fixed front edge, drawer and openings of the coffee table."
-    )
-)
 
 private val appColours = darkColorScheme(
     primary = Color(0xFF2CF58A),
@@ -189,7 +157,7 @@ private fun HomePage(
 ) {
     val mapReady = map != null &&
         map.version >= 2 &&
-        map.landmarks.count { it.referenceType == "room" } >= landmarkSpecs.size &&
+        map.landmarks.count { it.referenceType == "room" } >= minimumRoomKeyframes &&
         map.items.isNotEmpty()
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -219,7 +187,7 @@ private fun HomePage(
                     )
                     Text(
                         if (!mapReady) {
-                            "The old quick map is disabled because it can place markers incorrectly. Run the full scan once."
+                            "A visual sweep with at least $minimumRoomKeyframes usable keyframes is required. Scan the room once."
                         } else {
                             "${map?.landmarks?.size ?: 0} landmarks · ${map?.items?.size ?: 0} item location(s)"
                         },
@@ -255,7 +223,6 @@ private fun MappingPage(
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
-    val runtimeDatabase = rememberRuntimeAugmentedImageDatabase()
     val productRecognizer = remember { ProductRecognizer() }
     val latestFrame = remember { arrayOfNulls<Frame>(1) }
     val landmarks = remember { mutableStateListOf<LandmarkRecord>() }
@@ -265,7 +232,7 @@ private fun MappingPage(
     var step by remember { mutableStateOf(MapStep.ENTRANCE) }
     var entrancePose by remember { mutableStateOf<Pose?>(null) }
     var worldFromMap by remember { mutableStateOf<Pose?>(null) }
-    var landmarkIndex by remember { mutableIntStateOf(0) }
+    var arSession by remember { mutableStateOf<Session?>(null) }
     var tracking by remember { mutableStateOf(false) }
     var busy by remember { mutableStateOf(false) }
     var itemGroupReferenceId by remember { mutableStateOf<String?>(null) }
@@ -275,6 +242,7 @@ private fun MappingPage(
     var stableCaptureFrames by remember { mutableIntStateOf(0) }
     var previousCapturePose by remember { mutableStateOf<Pose?>(null) }
     var previousCaptureWidth by remember { mutableStateOf<Float?>(null) }
+    var lastKeyframeCameraPose by remember { mutableStateOf<Pose?>(null) }
 
     LaunchedEffect(Unit) {
         repository.clear()
@@ -288,7 +256,9 @@ private fun MappingPage(
 
     fun captureRoomReference(frame: Frame, measurement: FramedPlaneMeasurement) {
         val origin = worldFromMap ?: return
-        val spec = landmarkSpecs[landmarkIndex]
+        val session = arSession ?: return
+        val keyframeNumber = landmarks.count { it.referenceType == "room" } + 1
+        val referenceId = "room-keyframe-${keyframeNumber.toString().padStart(2, '0')}"
         val cameraPose = frame.camera.pose
         val bitmap = runCatching {
             frame.captureCameraBitmap()?.let(::centreCrop)
@@ -299,24 +269,25 @@ private fun MappingPage(
             return
         }
         busy = true
+        lastKeyframeCameraPose = cameraPose
         resetAutomaticCapture()
-        status = "Capturing ${spec.label} automatically…"
+        status = "Saving visual keyframe $keyframeNumber/$targetRoomKeyframes…"
         scope.launch {
-            when (val result = runtimeDatabase.addImage(
-                name = spec.id,
+            when (val result = validateReferenceImage(
+                session = session,
+                name = referenceId,
                 bitmap = bitmap,
                 widthInMeters = measurement.widthMetres
             )) {
                 is AddImageResult.Added -> {
                     val imageFile = withContext(Dispatchers.IO) {
-                        repository.saveLandmarkBitmap(spec.id, bitmap)
+                        repository.saveLandmarkBitmap(referenceId, bitmap)
                     }
                     val worldImagePose = PoseMath.imageAlignedPose(measurement.centrePose, cameraPose)
                     val mapImagePose = origin.inverse().compose(worldImagePose)
-                    landmarks.removeAll { it.id == spec.id }
                     landmarks += LandmarkRecord(
-                        id = spec.id,
-                        name = spec.label,
+                        id = referenceId,
+                        name = "Room keyframe $keyframeNumber",
                         imageFile = imageFile,
                         physicalWidthMetres = measurement.widthMetres,
                         mapPose = PoseRecord.fromPose(mapImagePose),
@@ -324,17 +295,16 @@ private fun MappingPage(
                     )
                     repository.save(StoreMap(landmarks = landmarks.toList()))
 
-                    if (landmarkIndex < landmarkSpecs.lastIndex) {
-                        landmarkIndex += 1
-                        status = "Saved. Move to ${landmarkSpecs[landmarkIndex].label}."
+                    if (keyframeNumber < targetRoomKeyframes) {
+                        status = "Saved $keyframeNumber/$targetRoomKeyframes · keep turning slowly."
                     } else {
                         step = MapStep.ITEM_GROUP
-                        status = "Room saved. Frame the Pringles and nearby products."
+                        status = "Visual room map complete. Frame the Pringles and nearby products."
                     }
                 }
 
                 is AddImageResult.LowQuality -> {
-                    status = "Not enough visual detail. Move closer and hold still again."
+                    status = "That view had too little detail. Keep sweeping; another view will be tried automatically."
                 }
 
                 is AddImageResult.Error -> {
@@ -347,6 +317,7 @@ private fun MappingPage(
 
     fun captureItemGroupReference(frame: Frame, measurement: FramedPlaneMeasurement) {
         val origin = worldFromMap ?: return
+        val session = arSession ?: return
         val cameraPose = frame.camera.pose
         val bitmap = runCatching {
             frame.captureCameraBitmap()?.let(::centreCrop)
@@ -361,7 +332,8 @@ private fun MappingPage(
         status = "Reading the product group on this phone…"
         scope.launch {
             val referenceId = "item-group-1"
-            when (val result = runtimeDatabase.addImage(
+            when (val result = validateReferenceImage(
+                session = session,
                 name = referenceId,
                 bitmap = bitmap,
                 widthInMeters = measurement.widthMetres
@@ -423,18 +395,26 @@ private fun MappingPage(
                 } else {
                     Config.DepthMode.DISABLED
                 }
-                runtimeDatabase.applyTo(config, session)
             },
-            onSessionCreated = { runtimeDatabase.bind(it) },
+            onSessionCreated = { arSession = it },
             onSessionUpdated = { _, frame ->
                 latestFrame[0] = frame
                 tracking = frame.camera.trackingState == TrackingState.TRACKING
                 val automaticStep = step == MapStep.LANDMARKS || step == MapStep.ITEM_GROUP
                 if (tracking && automaticStep && !busy && viewport != IntSize.Zero) {
+                    val lastKeyframe = lastKeyframeCameraPose
+                    val hasNewViewpoint = step != MapStep.LANDMARKS || lastKeyframe == null ||
+                        PoseMath.translationDistance(lastKeyframe, frame.camera.pose) >=
+                        minimumKeyframeTranslationMetres ||
+                        PoseMath.rotationDistanceDegrees(lastKeyframe, frame.camera.pose) >=
+                        minimumKeyframeRotationDegrees
                     val measurement = framedPlaneMeasurement(frame, viewport)
-                    if (measurement == null) {
+                    if (!hasNewViewpoint) {
                         resetAutomaticCapture()
-                        status = "Move slowly across the surface until the frame turns ready."
+                        status = "Keep turning slowly · ${landmarks.count { it.referenceType == "room" }}/$targetRoomKeyframes saved."
+                    } else if (measurement == null) {
+                        resetAutomaticCapture()
+                        status = "Sweep slowly across walls, shelves and signs until the frame finds detail."
                     } else {
                         val previousPose = previousCapturePose
                         val previousWidth = previousCaptureWidth
@@ -445,10 +425,19 @@ private fun MappingPage(
                         stableCaptureFrames = if (stable) stableCaptureFrames + 1 else 1
                         previousCapturePose = measurement.centrePose
                         previousCaptureWidth = measurement.widthMetres
-                        val progress = (stableCaptureFrames * 100 / 18).coerceIn(5, 100)
-                        status = "Surface found · hold still · $progress%"
+                        val requiredStableFrames = if (step == MapStep.LANDMARKS) {
+                            automaticCaptureStableFrames
+                        } else {
+                            18
+                        }
+                        val progress = (stableCaptureFrames * 100 / requiredStableFrames).coerceIn(5, 100)
+                        status = if (step == MapStep.LANDMARKS) {
+                            "Mapping view ${landmarks.count { it.referenceType == "room" } + 1}/$targetRoomKeyframes · $progress%"
+                        } else {
+                            "Surface found · hold still · $progress%"
+                        }
 
-                        if (stableCaptureFrames >= 18) {
+                        if (stableCaptureFrames >= requiredStableFrames) {
                             when (step) {
                                 MapStep.LANDMARKS -> captureRoomReference(frame, measurement)
                                 MapStep.ITEM_GROUP -> captureItemGroupReference(frame, measurement)
@@ -471,7 +460,7 @@ private fun MappingPage(
             title = when (step) {
                 MapStep.ENTRANCE -> "1 · Set the entrance"
                 MapStep.DIRECTION -> "2 · Set the shop direction"
-                MapStep.LANDMARKS -> "3 · Capture ${landmarkSpecs[landmarkIndex].label}"
+                MapStep.LANDMARKS -> "3 · Automatic room sweep"
                 MapStep.ITEM_GROUP -> "4 · AI scan the item group"
                 MapStep.ITEM -> "5 · Confirm the exact item point"
                 MapStep.COMPLETE -> "Map complete"
@@ -479,7 +468,7 @@ private fun MappingPage(
             instruction = when (step) {
                 MapStep.ENTRANCE -> "Aim at the floor where a customer enters."
                 MapStep.DIRECTION -> "Aim at the floor directly in front of the fireplace centre."
-                MapStep.LANDMARKS -> landmarkSpecs[landmarkIndex].guidance
+                MapStep.LANDMARKS -> "Stand near the centre and slowly turn once. The app pins useful views automatically."
                 MapStep.ITEM_GROUP -> "Frame the Pringles and nearby products. Hold still when the surface is found."
                 MapStep.ITEM -> "AI suggestion: $detectedItemName. Aim at the item's exact base."
                 MapStep.COMPLETE -> "Customer mode can now recognise the room without entrance points."
@@ -492,7 +481,8 @@ private fun MappingPage(
 
         BottomActionPanel(
             caption = when (step) {
-                MapStep.LANDMARKS -> "Landmark ${landmarkIndex + 1}/${landmarkSpecs.size} · automatic capture"
+                MapStep.LANDMARKS ->
+                    "Visual keyframes ${landmarks.count { it.referenceType == "room" }}/$targetRoomKeyframes · automatic"
                 MapStep.ITEM_GROUP -> "AI item scan · automatic capture"
                 MapStep.COMPLETE -> "Saved ${landmarks.size} landmarks and ${items.size} item."
                 else -> "One-time staff setup"
@@ -536,7 +526,7 @@ private fun MappingPage(
                             else -> {
                                 worldFromMap = PoseMath.floorAlignedOrigin(entrance, hit)
                                 step = MapStep.LANDMARKS
-                                status = landmarkSpecs.first().guidance
+                                status = "Slowly turn around the room. Useful views will be saved automatically."
                             }
                         }
                     }
@@ -595,7 +585,6 @@ private fun NavigationPage(
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
-    val runtimeDatabase = rememberRuntimeAugmentedImageDatabase()
     val navigationLandmarks = remember(map) {
         map.landmarks.filter { landmark ->
             landmark.referenceType == "room" && landmark.id !in redundantNavigationLandmarkIds
@@ -612,6 +601,10 @@ private fun NavigationPage(
     var cameraInMap by remember { mutableStateOf<Pose?>(null) }
     var lastRouteUpdate by remember { mutableLongStateOf(0L) }
     var previousAlignmentKey by remember { mutableStateOf("") }
+    var databaseReady by remember { mutableStateOf(false) }
+    var recognitionStartedAt by remember { mutableLongStateOf(0L) }
+    var recognitionWindowComplete by remember { mutableStateOf(false) }
+    val navigationReady = recognitionWindowComplete && alignment.canRenderNavigation
 
     val greenMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xFF2CF58A), unlit = true)
@@ -619,8 +612,8 @@ private fun NavigationPage(
     val redMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xDDFF3159), unlit = true)
     }
-    val routeMarkers = remember(cameraInMap, item, alignment.canRenderNavigation) {
-        if (alignment.canRenderNavigation) {
+    val routeMarkers = remember(cameraInMap, item, navigationReady) {
+        if (navigationReady) {
             buildRouteMarkers(cameraInMap, item.mapPose.toPose())
         } else {
             emptyList()
@@ -642,44 +635,28 @@ private fun NavigationPage(
                 } else {
                     Config.DepthMode.DISABLED
                 }
-                runtimeDatabase.applyTo(config, session)
             },
             onSessionCreated = { session ->
-                runtimeDatabase.bind(session)
-                if (runtimeDatabase.size == 0) {
-                    scope.launch {
-                        var loaded = 0
-                        navigationLandmarks.forEachIndexed { index, landmark ->
-                            status = "Preparing room landmark ${index + 1}/${navigationLandmarks.size}…"
-                            yield()
-                            val bitmap = withContext(Dispatchers.IO) {
-                                repository.loadLandmarkBitmap(landmark.imageFile)
-                                    ?.let(::constrainReferenceBitmap)
+                scope.launch {
+                    status = "Preparing the saved visual map…"
+                    val database = withContext(Dispatchers.Default) {
+                        prepareNavigationImageDatabase(session, repository, navigationLandmarks)
+                    }
+                    if (database != null && database.numImages > 0) {
+                        withContext(Dispatchers.Main) {
+                            session.configure { config ->
+                                config.augmentedImageDatabase = database
                             }
-                            if (bitmap != null) {
-                                when (runCatching {
-                                    runtimeDatabase.addImage(
-                                        name = landmark.id,
-                                        bitmap = bitmap,
-                                        widthInMeters = landmark.physicalWidthMetres
-                                    )
-                                }.getOrNull()) {
-                                    is AddImageResult.Added -> loaded += 1
-                                    else -> Unit
-                                }
-                            }
-                            yield()
                         }
-                        status = if (loaded > 0) {
-                            "Turn around slowly once. Searching $loaded distinct room landmarks…"
-                        } else {
-                            "No landmark images loaded. Remap the room."
-                        }
+                        databaseReady = true
+                        status = "Visual map ready. Slowly show the room for five seconds."
+                    } else {
+                        status = "No usable room keyframes were loaded. Remap the room."
                     }
                 }
             },
             onSessionUpdated = { _, frame ->
-                if (frame.camera.trackingState == TrackingState.TRACKING) {
+                if (frame.camera.trackingState == TrackingState.TRACKING && databaseReady) {
                     frame.getUpdatedTrackables(AugmentedImage::class.java).forEach { image ->
                         if (image.trackingState == TrackingState.TRACKING) {
                             val record = landmarkById[image.name]
@@ -694,27 +671,40 @@ private fun NavigationPage(
                     }
 
                     alignment = relocalizer.tick()
-                    val alignmentKey = "${alignment.quality}:${alignment.recentMatches}:${alignment.agreeingMatches}"
-                    if (alignmentKey != previousAlignmentKey) {
-                        previousAlignmentKey = alignmentKey
-                        status = when (alignment.quality) {
-                            AlignmentQuality.SEARCHING ->
-                                "Make one slow turn across the room. Navigation starts when two distinct details agree."
-                            AlignmentQuality.CHECKING ->
-                                "Recognised ${alignment.recentMatches} detail(s). Need $requiredNavigationMatches agreeing references from different parts of the room."
-                            AlignmentQuality.LOCKED ->
-                                "Room verified by ${alignment.agreeingMatches} agreeing references. Drift correction is active."
-                            AlignmentQuality.STALE ->
-                                "Alignment confidence dropped. Markers are hidden; turn toward two saved room details again."
+                    val now = System.currentTimeMillis()
+                    if (recognitionStartedAt == 0L) recognitionStartedAt = now
+                    val elapsed = now - recognitionStartedAt
+                    if (!recognitionWindowComplete && elapsed < customerRecognitionWindowMillis) {
+                        val secondsRemaining =
+                            ((customerRecognitionWindowMillis - elapsed + 999L) / 1_000L).coerceAtLeast(1L)
+                        status = "Visual fix: ${secondsRemaining}s · ${alignment.recentMatches} keyframe(s) connected."
+                    } else {
+                        if (!recognitionWindowComplete) {
+                            recognitionWindowComplete = true
+                            previousAlignmentKey = ""
+                        }
+                        val alignmentKey =
+                            "${alignment.quality}:${alignment.recentMatches}:${alignment.agreeingMatches}"
+                        if (alignmentKey != previousAlignmentKey) {
+                            previousAlignmentKey = alignmentKey
+                            status = when (alignment.quality) {
+                                AlignmentQuality.SEARCHING ->
+                                    "Five-second scan complete. Keep turning slowly so the room can be located."
+                                AlignmentQuality.CHECKING ->
+                                    "Connected ${alignment.recentMatches} keyframe(s). Need $requiredNavigationMatches agreeing views."
+                                AlignmentQuality.LOCKED ->
+                                    "Room located from ${alignment.agreeingMatches} agreeing keyframes. The virtual route is live."
+                                AlignmentQuality.STALE ->
+                                    "Alignment confidence dropped. Turn toward mapped room detail again."
+                            }
                         }
                     }
 
                     val mapTransform = alignment.pose
-                    val now = System.currentTimeMillis()
-                    if (alignment.canRenderNavigation && mapTransform != null && now - lastRouteUpdate > 180L) {
+                    if (navigationReady && mapTransform != null && now - lastRouteUpdate > 180L) {
                         cameraInMap = mapTransform.inverse().compose(frame.camera.pose)
                         lastRouteUpdate = now
-                    } else if (!alignment.canRenderNavigation) {
+                    } else if (!navigationReady) {
                         cameraInMap = null
                     }
                 }
@@ -726,7 +716,7 @@ private fun NavigationPage(
             }
         ) {
             val mapTransform = alignment.pose
-            if (alignment.canRenderNavigation && mapTransform != null) {
+            if (navigationReady && mapTransform != null) {
                 PoseNode(pose = mapTransform) {
                     routeMarkers.forEach { point ->
                         CylinderNode(
@@ -749,11 +739,11 @@ private fun NavigationPage(
         }
 
         TopPanel(
-            title = if (!alignment.canRenderNavigation) "Verifying this shop…" else "Finding ${item.name}",
-            instruction = if (!alignment.canRenderNavigation) {
-                "Make one slow turn. Two distinct fixed details are enough when their positions agree."
+            title = if (!navigationReady) "Connecting visual map…" else "Finding ${item.name}",
+            instruction = if (!navigationReady) {
+                "Slowly show the room for five seconds while nearby keyframes connect."
             } else {
-                "Follow the separated green floor markers to the red item highlight."
+                "The virtual-world route is projected live as green floor markers."
             },
             status = status,
             onExit = onExit
@@ -770,7 +760,7 @@ private fun NavigationPage(
             Column(Modifier.padding(16.dp)) {
                 Text(item.name, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (!alignment.canRenderNavigation) "Recognising the room from one slow turn" else "Digital twin verified",
+                    if (!navigationReady) "Building a visual position fix" else "Virtual route aligned to the room",
                     color = Color(0xFFAEC4D3)
                 )
             }
@@ -881,6 +871,51 @@ private fun BottomActionPanel(
             }
         }
     }
+}
+
+/** Probes one captured keyframe without growing or repeatedly rebuilding the live AR database. */
+private suspend fun validateReferenceImage(
+    session: Session,
+    name: String,
+    bitmap: Bitmap,
+    widthInMeters: Float
+): AddImageResult = withContext(Dispatchers.Default) {
+    runCatching {
+        AugmentedImageDatabase(session).addImage(name, bitmap, widthInMeters)
+    }.fold(
+        onSuccess = { AddImageResult.Added },
+        onFailure = { error ->
+            if (error is ImageInsufficientQualityException) {
+                AddImageResult.LowQuality
+            } else {
+                AddImageResult.Error(error)
+            }
+        }
+    )
+}
+
+/** Loads the saved feature database, or builds and serializes it once for this room map. */
+private fun prepareNavigationImageDatabase(
+    session: Session,
+    repository: StoreMapRepository,
+    landmarks: List<LandmarkRecord>
+): AugmentedImageDatabase? {
+    repository.loadAugmentedImageDatabase(session)?.let { saved ->
+        if (saved.numImages > 0) return saved
+    }
+
+    val database = AugmentedImageDatabase(session)
+    landmarks.forEach { landmark ->
+        val bitmap = repository.loadLandmarkBitmap(landmark.imageFile)
+            ?.let(::constrainReferenceBitmap)
+            ?: return@forEach
+        runCatching {
+            database.addImage(landmark.id, bitmap, landmark.physicalWidthMetres)
+        }
+    }
+    if (database.numImages == 0) return null
+    runCatching { repository.saveAugmentedImageDatabase(database) }
+    return database
 }
 
 private data class FramedPlaneMeasurement(
