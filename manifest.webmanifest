@@ -1,0 +1,17 @@
+{
+  "name": "AisleVia AR Living Room POC",
+  "short_name": "AisleVia AR",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#07131f",
+  "theme_color": "#07131f",
+  "description": "Tracked indoor AR navigation proof of concept.",
+  "icons": [
+    {
+      "src": "./assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
