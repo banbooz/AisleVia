@@ -84,6 +84,7 @@ class HierarchicalWorldLocalizer(context: Context) {
     private var lastMatchedKeyframeId: Int? = null
     private var lastConfidence = 0f
     private var conflictingStrongFrames = 0
+    private var localizationAttempt = 0
 
     private val keyframes: VisualKeyframeDatabase by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         check(OpenCVLoader.initLocal()) { "OpenCV could not initialise on this phone." }
@@ -93,6 +94,13 @@ class HierarchicalWorldLocalizer(context: Context) {
         LearnedVisualPoseMatcher(appContext)
     }
 
+    /** Preloads both offline maps so model decoding does not consume the five-second lock budget. */
+    fun preload(): Boolean = runCatching {
+        keyframes
+        learnedMatcher.preload()
+        true
+    }.getOrDefault(false)
+
     fun localize(
         sample: CameraFrameSample,
         arCameraPose: Pose,
@@ -100,6 +108,7 @@ class HierarchicalWorldLocalizer(context: Context) {
         prior: LocalizationPrior = LocalizationPrior(),
         nowMillis: Long = System.currentTimeMillis()
     ): VisualLocalizationResult {
+        localizationAttempt += 1
         val database = runCatching { keyframes }.getOrElse { error ->
             return VisualLocalizationResult(
                 phase = VisualLocalizationPhase.SEARCHING,
@@ -148,6 +157,14 @@ class HierarchicalWorldLocalizer(context: Context) {
             deviation.release()
             if (sharpness < MINIMUM_FRAME_SHARPNESS) {
                 return currentResult(nowMillis, 0, 0, "Hold the phone naturally; a sharp frame will be recognised automatically.")
+            }
+
+            // Real photographic features get an early chance before synthetic-view retrieval. This
+            // removes the old delay where XFeat only ran after every ORB candidate had failed.
+            if (lockedPose == null && (localizationAttempt == 1 || localizationAttempt % 3 == 0)) {
+                learnedCandidate(sample, arCameraPose, worldFloorY)?.let { learned ->
+                    return recordCandidate(learned, arCameraPose, nowMillis)
+                }
             }
 
             val clahe = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))

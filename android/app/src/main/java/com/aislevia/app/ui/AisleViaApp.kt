@@ -708,10 +708,14 @@ private fun NavigationPage(
     var positionInsideWorld by remember { mutableStateOf(false) }
     var passiveAnchorLocked by remember { mutableStateOf(false) }
     var activeSession by remember { mutableStateOf<Session?>(null) }
+    var recognitionStartedAt by remember { mutableLongStateOf(System.currentTimeMillis()) }
     val navigationReady = worldFromMap != null && positionInsideWorld
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) { contextSignals.refresh() }
+    }
+    LaunchedEffect(localizer) {
+        withContext(Dispatchers.Default) { localizer.preload() }
     }
 
     val greenMaterial = remember(materialLoader) {
@@ -757,6 +761,7 @@ private fun NavigationPage(
                         worldFromMap = null
                         cameraInMap = null
                         positionInsideWorld = false
+                        recognitionStartedAt = now
                     }
 
                     val passivePose = passiveAnchor.update(frame, worldFloorY)
@@ -780,7 +785,7 @@ private fun NavigationPage(
                         scope.launch(Dispatchers.IO) { contextSignals.refresh() }
                     }
 
-                    if (!passiveAnchorLocked && !visualBusy && now - lastVisualAttempt >= 380L) {
+                    if (!passiveAnchorLocked && !visualBusy && now - lastVisualAttempt >= 300L) {
                         lastVisualAttempt = now
                         val sample = runCatching { CameraFrameSample.capture(frame) }.getOrNull()
                         if (sample != null) {
@@ -825,6 +830,12 @@ private fun NavigationPage(
                         status = "That result fell outside the scanned room, so it was rejected automatically."
                     } else if (navigationReady && !visualBusy) {
                         status = "Room and position verified. Navigation is live."
+                    } else if (!navigationReady && now - recognitionStartedAt >= 5_000L && !visualBusy) {
+                        status = if (passiveAnchor.isReady) {
+                            "Still matching automatically. Keep the camera moving normally around the room."
+                        } else {
+                            "The fast room reference could not load; the full visual map is still matching automatically."
+                        }
                     }
                 }
             },

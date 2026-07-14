@@ -24,6 +24,11 @@ class PassiveRoomAnchorLocalizer(context: Context) {
     private var database: AugmentedImageDatabase? = null
     private val observations = ArrayDeque<Pose>()
     private var lockedPose: Pose? = null
+    @Volatile
+    private var databaseReady = false
+
+    val isReady: Boolean
+        get() = databaseReady
 
     /** Installs the small image database once per ARCore session. */
     fun configure(session: Session, config: Config) {
@@ -32,12 +37,13 @@ class PassiveRoomAnchorLocalizer(context: Context) {
             observations.clear()
             lockedPose = null
             database = buildDatabase(session)
+            databaseReady = database != null
         }
         database?.let { config.augmentedImageDatabase = it }
     }
 
     /**
-     * Returns a stable world-from-map transform after two agreeing FULL_TRACKING observations.
+     * Returns a stable world-from-map transform after an ARCore FULL_TRACKING observation.
      * Once established it remains valid for the lifetime of the ARCore session, even when the
      * artwork leaves the camera view, because ARCore keeps tracking movement in the same world.
      */
@@ -111,21 +117,21 @@ class PassiveRoomAnchorLocalizer(context: Context) {
     companion object {
         private const val ANCHOR_NAME = "living-room-parrot-artwork"
         private const val ANCHOR_ASSET_PATH =
-            "world/living_room/passive_anchors/parrot_artwork_vertical_flip.png"
+            "world/living_room/passive_anchors/parrot_artwork_real_rectified.jpg"
         private const val ANCHOR_WIDTH_METRES = 0.7250619f
         private const val MINIMUM_ACCEPTED_WIDTH = 0.50f
         private const val MAXIMUM_ACCEPTED_WIDTH = 0.95f
-        private const val REQUIRED_AGREEING_OBSERVATIONS = 2
+        private const val REQUIRED_AGREEING_OBSERVATIONS = 1
         private const val CONSENSUS_TRANSLATION_METRES = 0.14f
         private const val CONSENSUS_ROTATION_DEGREES = 7f
         private const val LOCK_UPDATE_TRANSLATION_METRES = 0.20f
         private const val LOCK_UPDATE_ROTATION_DEGREES = 10f
 
         /**
-         * Metric pose of the vertically flipped reference bitmap in the scan coordinate system.
+         * Metric pose of the upright, fronto-parallel reference bitmap in the scan coordinate system.
          * Local +X follows map +Z, local +Y is the wall normal into the room (-map X), and local +Z
-         * follows map -Y. The centre and physical width were measured from the original 8K textured
-         * RealityCapture mesh, not estimated from a phone screenshot.
+         * follows map -Y. Its appearance was rectified from a sharp real room photograph, while its
+         * centre and physical width come from the original metric RealityCapture mesh.
          */
         internal val MAP_FROM_IMAGE = Pose(
             floatArrayOf(2.5115037f, 1.7444282f, 1.0002344f),

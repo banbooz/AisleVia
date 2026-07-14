@@ -69,6 +69,13 @@ internal class LearnedVisualPoseMatcher(context: Context) {
     private val inferenceBuffers: InferenceBuffers by lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createInferenceBuffers)
     private val probabilityImage = FloatArray(INPUT_WIDTH * INPUT_HEIGHT)
 
+    /** Loads all offline model data before the first customer camera frame is evaluated. */
+    fun preload() {
+        interpreter
+        featureMap
+        inferenceBuffers
+    }
+
     fun solve(sample: CameraFrameSample): LearnedMetricPose? {
         val live = extract(sample)
         if (live.descriptors.rows() < MINIMUM_LIVE_FEATURES) {
