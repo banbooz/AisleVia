@@ -138,11 +138,11 @@ class HierarchicalWorldLocalizer(context: Context) {
             val targetHeight = max(1, (sample.height * scale).toInt())
             Imgproc.resize(source, gray, Size(targetWidth.toDouble(), targetHeight.toDouble()))
             val laplacian = Mat()
-            val mean = Mat()
-            val deviation = Mat()
+            val mean = MatOfDouble()
+            val deviation = MatOfDouble()
             Imgproc.Laplacian(gray, laplacian, CvType.CV_64F)
             Core.meanStdDev(laplacian, mean, deviation)
-            val sharpness = deviation.get(0, 0)?.firstOrNull()?.let { it * it } ?: 0.0
+            val sharpness = deviation.toArray().firstOrNull()?.let { it * it } ?: 0.0
             laplacian.release()
             mean.release()
             deviation.release()
