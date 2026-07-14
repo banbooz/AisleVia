@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.aislevia.app.ar.AutomaticContextSignals
 import com.aislevia.app.ui.AisleViaApp
 
 class MainActivity : ComponentActivity() {
@@ -39,7 +40,14 @@ class MainActivity : ComponentActivity() {
 
     private val cameraPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { granted -> cameraGranted = granted }
+    ) { granted ->
+        cameraGranted = granted
+        if (granted) requestAutomaticContextPermissionOnce()
+    }
+
+    private val automaticContextPermissions = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,7 +83,19 @@ class MainActivity : ComponentActivity() {
 
         if (!cameraGranted && previousCrash == null) {
             cameraPermission.launch(Manifest.permission.CAMERA)
+        } else if (cameraGranted && previousCrash == null) {
+            window.decorView.post(::requestAutomaticContextPermissionOnce)
         }
+    }
+
+    private fun requestAutomaticContextPermissionOnce() {
+        val preferences = getSharedPreferences(CONTEXT_PERMISSION_PREFS, MODE_PRIVATE)
+        if (preferences.getBoolean(CONTEXT_PERMISSION_ASKED, false)) return
+        val missing = AutomaticContextSignals.runtimePermissions().filter { permission ->
+            ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED
+        }
+        preferences.edit().putBoolean(CONTEXT_PERMISSION_ASKED, true).apply()
+        if (missing.isNotEmpty()) automaticContextPermissions.launch(missing.toTypedArray())
     }
 
     private fun installCrashRecorder() {
@@ -107,6 +127,8 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val CRASH_PREFS = "aislevia-crashes"
         private const val CRASH_REPORT = "latest-crash"
+        private const val CONTEXT_PERMISSION_PREFS = "automatic-context-permission"
+        private const val CONTEXT_PERMISSION_ASKED = "asked"
     }
 }
 

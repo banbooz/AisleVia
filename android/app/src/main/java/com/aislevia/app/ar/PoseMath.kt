@@ -102,6 +102,49 @@ object PoseMath {
         )
     }
 
+    /** Robustly blends pose observations without letting weak matches pull a good lock around. */
+    fun weightedAverage(poses: Collection<Pair<Pose, Float>>): Pose? {
+        if (poses.isEmpty()) return null
+        val firstQuaternion = poses.first().first.rotationQuaternion
+        var totalWeight = 0f
+        var tx = 0f
+        var ty = 0f
+        var tz = 0f
+        var qx = 0f
+        var qy = 0f
+        var qz = 0f
+        var qw = 0f
+
+        poses.forEach { (pose, suppliedWeight) ->
+            val weight = suppliedWeight.coerceAtLeast(0.001f)
+            val translation = pose.translation
+            val quaternion = pose.rotationQuaternion.copyOf()
+            val quaternionDot = quaternion.indices.sumOf { index ->
+                (quaternion[index] * firstQuaternion[index]).toDouble()
+            }.toFloat()
+            if (quaternionDot < 0f) quaternion.indices.forEach { quaternion[it] = -quaternion[it] }
+            totalWeight += weight
+            tx += translation[0] * weight
+            ty += translation[1] * weight
+            tz += translation[2] * weight
+            qx += quaternion[0] * weight
+            qy += quaternion[1] * weight
+            qz += quaternion[2] * weight
+            qw += quaternion[3] * weight
+        }
+
+        val quaternionLength = sqrt(qx * qx + qy * qy + qz * qz + qw * qw).coerceAtLeast(0.0001f)
+        return Pose(
+            floatArrayOf(tx / totalWeight, ty / totalWeight, tz / totalWeight),
+            floatArrayOf(
+                qx / quaternionLength,
+                qy / quaternionLength,
+                qz / quaternionLength,
+                qw / quaternionLength
+            )
+        )
+    }
+
     fun horizontalDistance(a: Pose, b: Pose): Float {
         val at = a.translation
         val bt = b.translation

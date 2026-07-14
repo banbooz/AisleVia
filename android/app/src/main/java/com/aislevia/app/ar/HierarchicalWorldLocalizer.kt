@@ -9,6 +9,7 @@ import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.DMatch
 import org.opencv.core.Mat
+import org.opencv.core.MatOfDMatch
 import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfKeyPoint
 import org.opencv.core.MatOfPoint2f
@@ -23,6 +24,7 @@ import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.zip.GZIPInputStream
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -34,6 +36,12 @@ private data class VisualKeyframe(
     val descriptors: Mat
 )
 
+private data class VisualKeyframeDatabase(
+    val keyframes: List<VisualKeyframe>,
+    val globalDescriptors: Mat,
+    val descriptorOwners: IntArray
+)
+
 private data class KeyframeCandidate(
     val keyframe: VisualKeyframe,
     val matches: List<DMatch>,
@@ -42,13 +50,22 @@ private data class KeyframeCandidate(
 
 private data class VerifiedPose(
     val worldFromMap: Pose,
+    val cameraInMap: Pose,
+    val keyframeId: Int?,
     val matches: Int,
-    val inliers: Int
+    val inliers: Int,
+    val coverageCells: Int,
+    val reprojectionError: Float,
+    val depthAgreement: Float?,
+    val confidence: Float
 )
 
 private data class HierarchicalPoseObservation(
     val pose: Pose,
-    val timestampMillis: Long
+    val arCameraPose: Pose,
+    val timestampMillis: Long,
+    val weight: Float,
+    val keyframeId: Int?
 )
 
 /**
@@ -56,26 +73,34 @@ private data class HierarchicalPoseObservation(
  *
  * Stage one retrieves the most similar rendered 3D viewpoints. Stage two removes geometrically
  * inconsistent matches inside each viewpoint, solves a metric 2D-to-3D pose, and rejects camera
- * positions outside the scanned room. Two independent frames must agree before navigation starts.
+ * positions outside the scanned room. A short confidence-weighted camera sequence must agree before
+ * navigation starts, after which the pose is rechecked silently while ARCore tracks movement.
  */
 class HierarchicalWorldLocalizer(context: Context) {
     private val appContext = context.applicationContext
     private val observations = ArrayDeque<HierarchicalPoseObservation>()
     private var lockedPose: Pose? = null
     private var lastVerifiedAtMillis = 0L
+    private var lastMatchedKeyframeId: Int? = null
+    private var lastConfidence = 0f
+    private var conflictingStrongFrames = 0
 
-    private val keyframes: List<VisualKeyframe> by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    private val keyframes: VisualKeyframeDatabase by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
         check(OpenCVLoader.initLocal()) { "OpenCV could not initialise on this phone." }
         loadKeyframes()
+    }
+    private val learnedMatcher by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        LearnedVisualPoseMatcher(appContext)
     }
 
     fun localize(
         sample: CameraFrameSample,
         arCameraPose: Pose,
         worldFloorY: Float?,
+        prior: LocalizationPrior = LocalizationPrior(),
         nowMillis: Long = System.currentTimeMillis()
     ): VisualLocalizationResult {
-        val map = runCatching { keyframes }.getOrElse { error ->
+        val database = runCatching { keyframes }.getOrElse { error ->
             return VisualLocalizationResult(
                 phase = VisualLocalizationPhase.SEARCHING,
                 worldFromMap = null,
@@ -88,11 +113,15 @@ class HierarchicalWorldLocalizer(context: Context) {
 
         val source = Mat(sample.height, sample.width, CvType.CV_8UC1)
         val gray = Mat()
+        val enhanced = Mat()
         val mask = Mat()
-        val liveKeypoints = MatOfKeyPoint()
+        val rawKeypoints = MatOfKeyPoint()
+        val enhancedKeypoints = MatOfKeyPoint()
+        val rawDescriptors = Mat()
+        val enhancedDescriptors = Mat()
         val liveDescriptors = Mat()
         val orb = ORB.create(
-            2400,
+            1800,
             1.2f,
             8,
             31,
@@ -108,39 +137,98 @@ class HierarchicalWorldLocalizer(context: Context) {
             val scale = targetWidth.toDouble() / sample.width.toDouble()
             val targetHeight = max(1, (sample.height * scale).toInt())
             Imgproc.resize(source, gray, Size(targetWidth.toDouble(), targetHeight.toDouble()))
-            orb.detectAndCompute(gray, mask, liveKeypoints, liveDescriptors)
+            val laplacian = Mat()
+            val mean = Mat()
+            val deviation = Mat()
+            Imgproc.Laplacian(gray, laplacian, CvType.CV_64F)
+            Core.meanStdDev(laplacian, mean, deviation)
+            val sharpness = deviation.get(0, 0)?.firstOrNull()?.let { it * it } ?: 0.0
+            laplacian.release()
+            mean.release()
+            deviation.release()
+            if (sharpness < MINIMUM_FRAME_SHARPNESS) {
+                return currentResult(nowMillis, 0, 0, "Hold the phone naturally; a sharp frame will be recognised automatically.")
+            }
+
+            val clahe = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))
+            clahe.apply(gray, enhanced)
+            clahe.clear()
+            orb.detectAndCompute(gray, mask, rawKeypoints, rawDescriptors)
+            orb.detectAndCompute(enhanced, mask, enhancedKeypoints, enhancedDescriptors)
+            when {
+                rawDescriptors.empty() -> enhancedDescriptors.copyTo(liveDescriptors)
+                enhancedDescriptors.empty() -> rawDescriptors.copyTo(liveDescriptors)
+                else -> Core.vconcat(listOf(rawDescriptors, enhancedDescriptors), liveDescriptors)
+            }
+            val framePoints = rawKeypoints.toArray() + enhancedKeypoints.toArray()
             if (liveDescriptors.empty() || liveDescriptors.rows() < 80) {
+                learnedCandidate(sample, arCameraPose, worldFloorY)?.let { learned ->
+                    return recordCandidate(learned, arCameraPose, nowMillis)
+                }
                 return currentResult(nowMillis, 0, 0, "Keep looking around slowly so the room is well lit and sharp.")
             }
 
             val matcher = BFMatcher.create(Core.NORM_HAMMING, false)
+            val retrievalSource = if (rawDescriptors.empty()) liveDescriptors else rawDescriptors
+            val retrievalDescriptors = retrievalSource.rowRange(
+                0,
+                min(RETRIEVAL_LIVE_DESCRIPTORS, retrievalSource.rows())
+            )
+            val globalMatches = MatOfDMatch()
+            matcher.match(retrievalDescriptors, database.globalDescriptors, globalMatches)
+            val retrievalScores = HashMap<Int, Int>()
+            globalMatches.toArray().forEach { match ->
+                if (match.trainIdx in database.descriptorOwners.indices && match.distance <= RETRIEVAL_MAX_DISTANCE) {
+                    val owner = database.descriptorOwners[match.trainIdx]
+                    retrievalScores[owner] = retrievalScores.getOrDefault(owner, 0) +
+                        (RETRIEVAL_MAX_DISTANCE - match.distance).toInt().coerceAtLeast(1)
+                }
+            }
+            globalMatches.release()
+            retrievalDescriptors.release()
+            val shortlistedKeyframes = database.keyframes
+                .sortedByDescending { keyframe ->
+                    retrievalScores.getOrDefault(keyframe.id, 0) +
+                        if (keyframe.id in prior.preferredKeyframeIds) PRIOR_RETRIEVAL_BOOST else 0
+                }
+                .take(RETRIEVAL_KEYFRAME_LIMIT)
             val candidates = ArrayList<KeyframeCandidate>()
-            map.forEach { keyframe ->
+            shortlistedKeyframes.forEach { keyframe ->
                 val neighbours = ArrayList<org.opencv.core.MatOfDMatch>()
                 matcher.knnMatch(liveDescriptors, keyframe.descriptors, neighbours, 2)
-                val broadMatches = ArrayList<DMatch>()
+                val broadByReference = HashMap<Int, DMatch>()
                 var strictMatches = 0
                 neighbours.forEach { pair ->
                     val pairMatches = pair.toArray()
                     if (pairMatches.size >= 2) {
                         val best = pairMatches[0]
                         val second = pairMatches[1]
-                        if (best.distance < second.distance * BROAD_RATIO) broadMatches += best
+                        if (best.distance < second.distance * BROAD_RATIO) {
+                            val previous = broadByReference[best.trainIdx]
+                            if (previous == null || best.distance < previous.distance) {
+                                broadByReference[best.trainIdx] = best
+                            }
+                        }
                         if (best.distance < second.distance * STRICT_RATIO) strictMatches += 1
                     }
                     pair.release()
                 }
+                val broadMatches = broadByReference.values.toList()
                 if (broadMatches.size >= MINIMUM_KEYFRAME_MATCHES) {
                     candidates += KeyframeCandidate(
                         keyframe = keyframe,
                         matches = broadMatches,
-                        score = strictMatches * 4 + broadMatches.size
+                        score = strictMatches * 4 + broadMatches.size +
+                            if (keyframe.id in prior.preferredKeyframeIds) PRIOR_KEYFRAME_BOOST else 0
                     )
                 }
             }
             matcher.clear()
 
             if (candidates.isEmpty()) {
+                learnedCandidate(sample, arCameraPose, worldFloorY)?.let { learned ->
+                    return recordCandidate(learned, arCameraPose, nowMillis)
+                }
                 return currentResult(
                     nowMillis,
                     0,
@@ -149,7 +237,6 @@ class HierarchicalWorldLocalizer(context: Context) {
                 )
             }
 
-            val framePoints = liveKeypoints.toArray()
             val cameraMatrix = Mat.eye(3, 3, CvType.CV_64F)
             cameraMatrix.put(0, 0, sample.focalX * scale)
             cameraMatrix.put(1, 1, sample.focalY * scale)
@@ -159,12 +246,19 @@ class HierarchicalWorldLocalizer(context: Context) {
                 .sortedByDescending(KeyframeCandidate::score)
                 .take(MAXIMUM_POSE_CANDIDATES)
                 .mapNotNull { candidate ->
-                    solveCandidate(candidate, framePoints, cameraMatrix, arCameraPose, worldFloorY)
+                    solveCandidate(candidate, framePoints, cameraMatrix, arCameraPose, worldFloorY, sample)
                 }
-                .maxWithOrNull(compareBy<VerifiedPose> { it.inliers }.thenBy { it.matches })
+                .maxWithOrNull(
+                    compareBy<VerifiedPose> { it.confidence }
+                        .thenBy { it.inliers }
+                        .thenBy { it.matches }
+                )
             cameraMatrix.release()
 
             if (best == null) {
+                learnedCandidate(sample, arCameraPose, worldFloorY)?.let { learned ->
+                    return recordCandidate(learned, arCameraPose, nowMillis)
+                }
                 val top = candidates.maxBy(KeyframeCandidate::score)
                 return currentResult(
                     nowMillis,
@@ -173,23 +267,52 @@ class HierarchicalWorldLocalizer(context: Context) {
                     "Room recognised, but the position is still being checked. Keep moving slowly."
                 )
             }
-            return recordCandidate(best, nowMillis)
+            return recordCandidate(best, arCameraPose, nowMillis)
         } finally {
             orb.clear()
             liveDescriptors.release()
-            liveKeypoints.release()
+            enhancedDescriptors.release()
+            rawDescriptors.release()
+            enhancedKeypoints.release()
+            rawKeypoints.release()
             mask.release()
+            enhanced.release()
             gray.release()
             source.release()
         }
     }
+
+    private fun learnedCandidate(
+        sample: CameraFrameSample,
+        arCameraPose: Pose,
+        worldFloorY: Float?
+    ): VerifiedPose? = runCatching {
+        learnedMatcher.solve(sample)?.let { learned ->
+            var worldFromMap = arCameraPose.compose(learned.cameraFromMap)
+            if (worldFloorY != null) {
+                worldFromMap = PoseMath.floorConstrainedPose(worldFromMap, worldFloorY)
+            }
+            VerifiedPose(
+                worldFromMap = worldFromMap,
+                cameraInMap = learned.cameraInMap,
+                keyframeId = null,
+                matches = learned.matches,
+                inliers = learned.inliers,
+                coverageCells = learned.coverageCells,
+                reprojectionError = learned.reprojectionError,
+                depthAgreement = null,
+                confidence = learned.confidence
+            )
+        }
+    }.getOrNull()
 
     private fun solveCandidate(
         candidate: KeyframeCandidate,
         frameKeypoints: Array<org.opencv.core.KeyPoint>,
         cameraMatrix: Mat,
         arCameraPose: Pose,
-        worldFloorY: Float?
+        worldFloorY: Float?,
+        sample: CameraFrameSample
     ): VerifiedPose? {
         val validMatches = candidate.matches.filter {
             it.queryIdx in frameKeypoints.indices &&
@@ -224,12 +347,10 @@ class HierarchicalWorldLocalizer(context: Context) {
         livePoints.release()
         if (consistentMatches.size < MINIMUM_HOMOGRAPHY_INLIERS) return null
 
-        val objectPoints = MatOfPoint3f().apply {
-            fromList(consistentMatches.map { candidate.keyframe.mapPoints[it.trainIdx] })
-        }
-        val imagePoints = MatOfPoint2f().apply {
-            fromList(consistentMatches.map { frameKeypoints[it.queryIdx].pt })
-        }
+        val objectPointList = consistentMatches.map { candidate.keyframe.mapPoints[it.trainIdx] }
+        val imagePointList = consistentMatches.map { frameKeypoints[it.queryIdx].pt }
+        val objectPoints = MatOfPoint3f().apply { fromList(objectPointList) }
+        val imagePoints = MatOfPoint2f().apply { fromList(imagePointList) }
         val distortion = MatOfDouble()
         val rotationVector = Mat()
         val translationVector = Mat()
@@ -248,22 +369,94 @@ class HierarchicalWorldLocalizer(context: Context) {
             inliers,
             Calib3d.SOLVEPNP_EPNP
         )
-        val inlierCount = if (solved) inliers.rows() else 0
+        val inlierIndices = if (solved) {
+            List(inliers.rows()) { row -> inliers.get(row, 0).first().toInt() }
+                .filter { it in consistentMatches.indices }
+        } else {
+            emptyList()
+        }
+        val inlierCount = inlierIndices.size
         val inlierRatio = inlierCount.toFloat() / consistentMatches.size.toFloat()
         var result: VerifiedPose? = null
         if (solved && inlierCount >= MINIMUM_POSE_INLIERS && inlierRatio >= MINIMUM_POSE_INLIER_RATIO) {
+            val refinedObjectList = inlierIndices.map(objectPointList::get)
+            val refinedImageList = inlierIndices.map(imagePointList::get)
+            val refinedObjects = MatOfPoint3f().apply { fromList(refinedObjectList) }
+            val refinedImages = MatOfPoint2f().apply { fromList(refinedImageList) }
+            Calib3d.solvePnP(
+                refinedObjects,
+                refinedImages,
+                cameraMatrix,
+                distortion,
+                rotationVector,
+                translationVector,
+                true,
+                Calib3d.SOLVEPNP_ITERATIVE
+            )
+            val projected = MatOfPoint2f()
+            Calib3d.projectPoints(
+                refinedObjects,
+                rotationVector,
+                translationVector,
+                cameraMatrix,
+                distortion,
+                projected
+            )
+            val projectedPoints = projected.toArray()
+            val reprojectionError = sqrt(
+                refinedImageList.zip(projectedPoints.toList()).sumOf { (observed, estimate) ->
+                    val dx = observed.x - estimate.x
+                    val dy = observed.y - estimate.y
+                    dx * dx + dy * dy
+                } / refinedImageList.size.toDouble().coerceAtLeast(1.0)
+            ).toFloat()
+            val coverageCells = spatialCoverage(refinedImageList, cameraMatrix)
+            val depthAgreement = depthAgreement(
+                sample,
+                refinedImageList,
+                refinedObjectList,
+                cameraMatrix,
+                rotationVector,
+                translationVector
+            )
             val cameraFromMap = openCvPose(rotationVector, translationVector)
-            val cameraInMap = cameraFromMap.inverse().translation
-            val insideScan = cameraInMap[0] in (MIN_MAP_X - BOUNDS_MARGIN)..(MAX_MAP_X + BOUNDS_MARGIN) &&
-                cameraInMap[1] in MINIMUM_CAMERA_HEIGHT..MAXIMUM_CAMERA_HEIGHT &&
-                cameraInMap[2] in (MIN_MAP_Z - BOUNDS_MARGIN)..(MAX_MAP_Z + BOUNDS_MARGIN)
-            if (insideScan) {
+            val cameraInMap = cameraFromMap.inverse()
+            val cameraPosition = cameraInMap.translation
+            val insideScan = cameraPosition[0] in (MIN_MAP_X - BOUNDS_MARGIN)..(MAX_MAP_X + BOUNDS_MARGIN) &&
+                cameraPosition[1] in MINIMUM_CAMERA_HEIGHT..MAXIMUM_CAMERA_HEIGHT &&
+                cameraPosition[2] in (MIN_MAP_Z - BOUNDS_MARGIN)..(MAX_MAP_Z + BOUNDS_MARGIN)
+            val confidence = poseConfidence(
+                inlierCount,
+                inlierRatio,
+                coverageCells,
+                reprojectionError,
+                depthAgreement
+            )
+            if (insideScan &&
+                coverageCells >= MINIMUM_COVERAGE_CELLS &&
+                reprojectionError <= MAXIMUM_REPROJECTION_ERROR &&
+                (depthAgreement == null || depthAgreement >= MINIMUM_DEPTH_AGREEMENT) &&
+                confidence >= MINIMUM_POSE_CONFIDENCE
+            ) {
                 var worldFromMap = arCameraPose.compose(cameraFromMap)
                 if (worldFloorY != null) {
                     worldFromMap = PoseMath.floorConstrainedPose(worldFromMap, worldFloorY)
                 }
-                result = VerifiedPose(worldFromMap, validMatches.size, inlierCount)
+                result = VerifiedPose(
+                    worldFromMap = worldFromMap,
+                    cameraInMap = cameraInMap,
+                    keyframeId = candidate.keyframe.id,
+                    matches = validMatches.size,
+                    inliers = inlierCount,
+                    coverageCells = coverageCells,
+                    reprojectionError = reprojectionError,
+                    depthAgreement = depthAgreement,
+                    confidence = confidence
+                )
             }
+            projected.release()
+            refinedImages.release()
+            refinedObjects.release()
         }
         objectPoints.release()
         imagePoints.release()
@@ -274,31 +467,163 @@ class HierarchicalWorldLocalizer(context: Context) {
         return result
     }
 
-    private fun recordCandidate(candidate: VerifiedPose, nowMillis: Long): VisualLocalizationResult {
+    private fun spatialCoverage(points: List<Point>, cameraMatrix: Mat): Int {
+        val width = (cameraMatrix.get(0, 2).first() * 2.0).coerceAtLeast(1.0)
+        val height = (cameraMatrix.get(1, 2).first() * 2.0).coerceAtLeast(1.0)
+        return points.map { point ->
+            val column = (point.x / width * COVERAGE_COLUMNS).toInt().coerceIn(0, COVERAGE_COLUMNS - 1)
+            val row = (point.y / height * COVERAGE_ROWS).toInt().coerceIn(0, COVERAGE_ROWS - 1)
+            row * COVERAGE_COLUMNS + column
+        }.toSet().size
+    }
+
+    private fun poseConfidence(
+        inliers: Int,
+        inlierRatio: Float,
+        coverageCells: Int,
+        reprojectionError: Float,
+        depthAgreement: Float?
+    ): Float {
+        val inlierScore = ((inliers - 6) / 18f).coerceIn(0f, 1f)
+        val coverageScore = (coverageCells / 8f).coerceIn(0f, 1f)
+        val reprojectionScore = (1f - reprojectionError / MAXIMUM_REPROJECTION_ERROR).coerceIn(0f, 1f)
+        val visualScore = inlierRatio.coerceIn(0f, 1f) * 0.35f +
+            inlierScore * 0.25f +
+            coverageScore * 0.20f +
+            reprojectionScore * 0.20f
+        return if (depthAgreement == null) visualScore else visualScore * 0.82f + depthAgreement * 0.18f
+    }
+
+    /** Compares solved mesh depth with ARCore depth when the phone supports it. */
+    private fun depthAgreement(
+        sample: CameraFrameSample,
+        imagePoints: List<Point>,
+        objectPoints: List<Point3>,
+        cameraMatrix: Mat,
+        rotationVector: Mat,
+        translationVector: Mat
+    ): Float? {
+        val depth = sample.depthMillimetres ?: return null
+        if (sample.depthWidth <= 0 || sample.depthHeight <= 0) return null
+        val frameWidth = (cameraMatrix.get(0, 2).first() * 2.0).coerceAtLeast(1.0)
+        val frameHeight = (cameraMatrix.get(1, 2).first() * 2.0).coerceAtLeast(1.0)
+        val rotationMatrix = Mat()
+        Calib3d.Rodrigues(rotationVector, rotationMatrix)
+        val rotation = DoubleArray(9).also { rotationMatrix.get(0, 0, it) }
+        val translation = DoubleArray(3).also { translationVector.get(0, 0, it) }
+        rotationMatrix.release()
+        var valid = 0
+        var agreeing = 0
+        imagePoints.zip(objectPoints).forEach { (imagePoint, objectPoint) ->
+            val depthX = (imagePoint.x / frameWidth * sample.depthWidth).toInt()
+                .coerceIn(0, sample.depthWidth - 1)
+            val depthY = (imagePoint.y / frameHeight * sample.depthHeight).toInt()
+                .coerceIn(0, sample.depthHeight - 1)
+            val measuredValues = buildList {
+                for (offsetY in -1..1) for (offsetX in -1..1) {
+                    val x = (depthX + offsetX).coerceIn(0, sample.depthWidth - 1)
+                    val y = (depthY + offsetY).coerceIn(0, sample.depthHeight - 1)
+                    val value = depth[y * sample.depthWidth + x]
+                    if (value in MINIMUM_VALID_DEPTH_MM..MAXIMUM_VALID_DEPTH_MM) add(value)
+                }
+            }.sorted()
+            if (measuredValues.isEmpty()) return@forEach
+            val measuredMetres = measuredValues[measuredValues.size / 2] / 1000.0
+            val predictedMetres = rotation[6] * objectPoint.x +
+                rotation[7] * objectPoint.y +
+                rotation[8] * objectPoint.z +
+                translation[2]
+            if (predictedMetres <= 0.1) return@forEach
+            valid += 1
+            val tolerance = max(DEPTH_ABSOLUTE_TOLERANCE_METRES, predictedMetres * DEPTH_RELATIVE_TOLERANCE)
+            if (abs(measuredMetres - predictedMetres) <= tolerance) agreeing += 1
+        }
+        return if (valid >= MINIMUM_DEPTH_SAMPLES) agreeing.toFloat() / valid.toFloat() else null
+    }
+
+    private fun recordCandidate(
+        candidate: VerifiedPose,
+        arCameraPose: Pose,
+        nowMillis: Long
+    ): VisualLocalizationResult {
         observations.removeAll { nowMillis - it.timestampMillis > CONSENSUS_WINDOW_MILLIS }
         val existingLock = lockedPose
-        if (existingLock != null &&
-            (PoseMath.translationDistance(existingLock, candidate.worldFromMap) > LOCK_TRANSLATION_TOLERANCE_METRES ||
-                PoseMath.rotationDistanceDegrees(existingLock, candidate.worldFromMap) > LOCK_ROTATION_TOLERANCE_DEGREES)
-        ) {
-            return currentResult(nowMillis, candidate.matches, candidate.inliers, "A conflicting view was rejected automatically.")
+        if (existingLock != null) {
+            val agrees = PoseMath.translationDistance(existingLock, candidate.worldFromMap) <=
+                LOCK_TRANSLATION_TOLERANCE_METRES &&
+                PoseMath.rotationDistanceDegrees(existingLock, candidate.worldFromMap) <=
+                LOCK_ROTATION_TOLERANCE_DEGREES
+            if (agrees) {
+                conflictingStrongFrames = 0
+                lockedPose = PoseMath.weightedAverage(
+                    listOf(existingLock to 4f, candidate.worldFromMap to candidate.confidence)
+                )
+                lastVerifiedAtMillis = nowMillis
+                lastMatchedKeyframeId = candidate.keyframeId
+                lastConfidence = candidate.confidence
+                return VisualLocalizationResult(
+                    VisualLocalizationPhase.LOCKED,
+                    lockedPose,
+                    candidate.matches,
+                    candidate.inliers,
+                    REQUIRED_AGREEING_FRAMES_NORMAL,
+                    "Navigation is live and the position is being checked continuously.",
+                    candidate.keyframeId,
+                    candidate.confidence
+                )
+            }
+
+            if (candidate.confidence >= STRONG_CONFLICT_CONFIDENCE) conflictingStrongFrames += 1
+            if (conflictingStrongFrames < REQUIRED_STRONG_CONFLICTS_TO_RESET) {
+                return currentResult(
+                    nowMillis,
+                    candidate.matches,
+                    candidate.inliers,
+                    "A conflicting view was ignored while the saved position is rechecked."
+                )
+            }
+            lockedPose = null
+            observations.clear()
+            conflictingStrongFrames = 0
         }
 
-        observations += HierarchicalPoseObservation(candidate.worldFromMap, nowMillis)
+        val previous = observations.lastOrNull()
+        val independent = previous == null ||
+            nowMillis - previous.timestampMillis >= MAXIMUM_STATIONARY_SAMPLE_GAP_MILLIS ||
+            PoseMath.translationDistance(previous.arCameraPose, arCameraPose) >= MINIMUM_CAMERA_MOVEMENT_METRES ||
+            PoseMath.rotationDistanceDegrees(previous.arCameraPose, arCameraPose) >= MINIMUM_CAMERA_ROTATION_DEGREES
+        if (independent) {
+            observations += HierarchicalPoseObservation(
+                pose = candidate.worldFromMap,
+                arCameraPose = arCameraPose,
+                timestampMillis = nowMillis,
+                weight = candidate.confidence,
+                keyframeId = candidate.keyframeId
+            )
+        }
         val cluster = observations.filter {
             PoseMath.translationDistance(it.pose, candidate.worldFromMap) <= CONSENSUS_TRANSLATION_TOLERANCE_METRES &&
                 PoseMath.rotationDistanceDegrees(it.pose, candidate.worldFromMap) <= CONSENSUS_ROTATION_TOLERANCE_DEGREES
         }
-        if (cluster.size >= REQUIRED_AGREEING_FRAMES) {
-            lockedPose = PoseMath.average(cluster.map(HierarchicalPoseObservation::pose))
+        val requiredFrames = if (candidate.confidence >= HIGH_CONFIDENCE_LOCK) {
+            REQUIRED_AGREEING_FRAMES_HIGH_CONFIDENCE
+        } else {
+            REQUIRED_AGREEING_FRAMES_NORMAL
+        }
+        if (cluster.size >= requiredFrames) {
+            lockedPose = PoseMath.weightedAverage(cluster.map { it.pose to it.weight })
             lastVerifiedAtMillis = nowMillis
+            lastMatchedKeyframeId = candidate.keyframeId
+            lastConfidence = cluster.map(HierarchicalPoseObservation::weight).average().toFloat()
             return VisualLocalizationResult(
                 VisualLocalizationPhase.LOCKED,
                 lockedPose,
                 candidate.matches,
                 candidate.inliers,
                 cluster.size,
-                "Room and position recognised automatically."
+                "Room and position recognised automatically.",
+                candidate.keyframeId,
+                lastConfidence
             )
         }
         return VisualLocalizationResult(
@@ -307,7 +632,9 @@ class HierarchicalWorldLocalizer(context: Context) {
             candidate.matches,
             candidate.inliers,
             cluster.size,
-            "Position found. One more matching view will confirm it."
+            "Position found and is being confirmed automatically.",
+            candidate.keyframeId,
+            candidate.confidence
         )
     }
 
@@ -324,23 +651,30 @@ class HierarchicalWorldLocalizer(context: Context) {
                 lock,
                 matches,
                 inliers,
-                REQUIRED_AGREEING_FRAMES,
-                "Navigation is live while the room is rechecked."
+                REQUIRED_AGREEING_FRAMES_NORMAL,
+                "Navigation is live while the room is rechecked.",
+                lastMatchedKeyframeId,
+                lastConfidence
             )
         } else {
-            if (nowMillis - lastVerifiedAtMillis > LOCK_STALE_MILLIS) lockedPose = null
+            if (nowMillis - lastVerifiedAtMillis > LOCK_STALE_MILLIS) {
+                lockedPose = null
+                lastConfidence = 0f
+            }
             VisualLocalizationResult(
                 VisualLocalizationPhase.SEARCHING,
                 null,
                 matches,
                 inliers,
                 0,
-                searchingMessage
+                searchingMessage,
+                lastMatchedKeyframeId,
+                0f
             )
         }
     }
 
-    private fun loadKeyframes(): List<VisualKeyframe> {
+    private fun loadKeyframes(): VisualKeyframeDatabase {
         val encoded = KEYFRAME_ASSETS.joinToString(separator = "") { asset ->
             appContext.assets.open(asset).bufferedReader().use { it.readText() }
         }
@@ -351,11 +685,11 @@ class HierarchicalWorldLocalizer(context: Context) {
         check(magicBytes.toString(Charsets.US_ASCII) == "AVKF") { "Unexpected keyframe-map header." }
         check(buffer.int == 1) { "Unsupported keyframe-map version." }
         val keyframeCount = buffer.int
-        check(keyframeCount in 32..256) { "Invalid keyframe count." }
-        return List(keyframeCount) {
+        check(keyframeCount in 32..512) { "Invalid keyframe count." }
+        val loaded = List(keyframeCount) {
             val id = buffer.int
             val featureCount = buffer.int
-            check(featureCount in 100..1200) { "Invalid keyframe feature count." }
+            check(featureCount in 60..1200) { "Invalid keyframe feature count." }
             val mapPoints = ArrayList<Point3>(featureCount)
             val imagePoints = ArrayList<Point>(featureCount)
             val descriptorBytes = ByteArray(featureCount * DESCRIPTOR_BYTES)
@@ -368,6 +702,16 @@ class HierarchicalWorldLocalizer(context: Context) {
             descriptors.put(0, 0, descriptorBytes)
             VisualKeyframe(id, mapPoints, imagePoints, descriptors)
         }
+        val globalDescriptors = Mat()
+        Core.vconcat(loaded.map(VisualKeyframe::descriptors), globalDescriptors)
+        val descriptorOwners = IntArray(globalDescriptors.rows())
+        var descriptorOffset = 0
+        loaded.forEach { keyframe ->
+            repeat(keyframe.descriptors.rows()) {
+                descriptorOwners[descriptorOffset++] = keyframe.id
+            }
+        }
+        return VisualKeyframeDatabase(loaded, globalDescriptors, descriptorOwners)
     }
 
     /** Converts OpenCV camera axes (+X right, +Y down, +Z forward) to ARCore axes. */
@@ -425,19 +769,36 @@ class HierarchicalWorldLocalizer(context: Context) {
     }
 
     companion object {
-        private val KEYFRAME_ASSETS = (0..8).map { part ->
+        private val KEYFRAME_ASSETS = (0..13).map { part ->
             "world/living_room/visual_keyframes/part_${part.toString().padStart(2, '0')}.b64"
         }
         private const val DESCRIPTOR_BYTES = 32
+        private const val MINIMUM_FRAME_SHARPNESS = 55.0
+        private const val RETRIEVAL_LIVE_DESCRIPTORS = 900
+        private const val RETRIEVAL_MAX_DISTANCE = 72f
+        private const val RETRIEVAL_KEYFRAME_LIMIT = 52
+        private const val PRIOR_RETRIEVAL_BOOST = 1_200
         private const val STRICT_RATIO = 0.78f
-        private const val BROAD_RATIO = 0.86f
-        private const val MINIMUM_KEYFRAME_MATCHES = 30
-        private const val MAXIMUM_POSE_CANDIDATES = 16
-        private const val MINIMUM_HOMOGRAPHY_INLIERS = 9
-        private const val MINIMUM_POSE_INLIERS = 7
-        private const val MINIMUM_POSE_INLIER_RATIO = 0.55f
+        private const val BROAD_RATIO = 0.87f
+        private const val PRIOR_KEYFRAME_BOOST = 220
+        private const val MINIMUM_KEYFRAME_MATCHES = 24
+        private const val MAXIMUM_POSE_CANDIDATES = 24
+        private const val MINIMUM_HOMOGRAPHY_INLIERS = 10
+        private const val MINIMUM_POSE_INLIERS = 8
+        private const val MINIMUM_POSE_INLIER_RATIO = 0.45f
         private const val HOMOGRAPHY_REPROJECTION_PIXELS = 6.0
         private const val POSE_REPROJECTION_PIXELS = 6.0f
+        private const val MAXIMUM_REPROJECTION_ERROR = 5.5f
+        private const val MINIMUM_POSE_CONFIDENCE = 0.42f
+        private const val COVERAGE_COLUMNS = 4
+        private const val COVERAGE_ROWS = 3
+        private const val MINIMUM_COVERAGE_CELLS = 4
+        private const val MINIMUM_VALID_DEPTH_MM = 250
+        private const val MAXIMUM_VALID_DEPTH_MM = 8_000
+        private const val MINIMUM_DEPTH_SAMPLES = 4
+        private const val DEPTH_ABSOLUTE_TOLERANCE_METRES = 0.45
+        private const val DEPTH_RELATIVE_TOLERANCE = 0.25
+        private const val MINIMUM_DEPTH_AGREEMENT = 0.35f
         private const val MIN_MAP_X = -2.10f
         private const val MAX_MAP_X = 2.72f
         private const val MIN_MAP_Z = -2.47f
@@ -445,12 +806,19 @@ class HierarchicalWorldLocalizer(context: Context) {
         private const val BOUNDS_MARGIN = 0.35f
         private const val MINIMUM_CAMERA_HEIGHT = 0.45f
         private const val MAXIMUM_CAMERA_HEIGHT = 2.45f
-        private const val REQUIRED_AGREEING_FRAMES = 2
-        private const val CONSENSUS_WINDOW_MILLIS = 9_000L
-        private const val LOCK_STALE_MILLIS = 20_000L
-        private const val CONSENSUS_TRANSLATION_TOLERANCE_METRES = 0.70f
-        private const val CONSENSUS_ROTATION_TOLERANCE_DEGREES = 18f
-        private const val LOCK_TRANSLATION_TOLERANCE_METRES = 0.85f
-        private const val LOCK_ROTATION_TOLERANCE_DEGREES = 22f
+        private const val REQUIRED_AGREEING_FRAMES_HIGH_CONFIDENCE = 2
+        private const val REQUIRED_AGREEING_FRAMES_NORMAL = 3
+        private const val HIGH_CONFIDENCE_LOCK = 0.72f
+        private const val CONSENSUS_WINDOW_MILLIS = 7_000L
+        private const val LOCK_STALE_MILLIS = 15_000L
+        private const val CONSENSUS_TRANSLATION_TOLERANCE_METRES = 0.55f
+        private const val CONSENSUS_ROTATION_TOLERANCE_DEGREES = 13f
+        private const val LOCK_TRANSLATION_TOLERANCE_METRES = 0.65f
+        private const val LOCK_ROTATION_TOLERANCE_DEGREES = 16f
+        private const val MINIMUM_CAMERA_MOVEMENT_METRES = 0.025f
+        private const val MINIMUM_CAMERA_ROTATION_DEGREES = 1.5f
+        private const val MAXIMUM_STATIONARY_SAMPLE_GAP_MILLIS = 900L
+        private const val STRONG_CONFLICT_CONFIDENCE = 0.72f
+        private const val REQUIRED_STRONG_CONFLICTS_TO_RESET = 3
     }
 }

@@ -44,12 +44,14 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.aislevia.app.ar.LandmarkRelocalizer
 import com.aislevia.app.ar.AlignmentQuality
+import com.aislevia.app.ar.AutomaticContextSignals
 import com.aislevia.app.ar.CameraFrameSample
 import com.aislevia.app.ar.FloorPlaneEstimator
 import com.aislevia.app.ar.PoseMath
 import com.aislevia.app.ar.ProductRecognizer
 import com.aislevia.app.ar.ReferenceImageQuality
 import com.aislevia.app.ar.HierarchicalWorldLocalizer
+import com.aislevia.app.ar.VisualLocalizationPhase
 import com.aislevia.app.data.StoreMapRepository
 import com.aislevia.app.model.ItemRecord
 import com.aislevia.app.model.LandmarkRecord
@@ -688,19 +690,25 @@ private fun NavigationPage(
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
     val localizer = remember(map) { HierarchicalWorldLocalizer(context.applicationContext) }
+    val contextSignals = remember(map) { AutomaticContextSignals(context.applicationContext) }
     val floorEstimator = remember(map) { FloorPlaneEstimator() }
     val item = remember(map) { map.items.first() }
 
     var status by remember {
-        mutableStateOf("Walk in and slowly look around. No particular landmark is required.")
+        mutableStateOf("Walk in and point the camera into the room. Recognition is automatic.")
     }
     var worldFromMap by remember { mutableStateOf<Pose?>(null) }
     var cameraInMap by remember { mutableStateOf<Pose?>(null) }
     var lastRouteUpdate by remember { mutableLongStateOf(0L) }
     var lastVisualAttempt by remember { mutableLongStateOf(0L) }
+    var lastContextRefresh by remember { mutableLongStateOf(0L) }
     var visualBusy by remember { mutableStateOf(false) }
     var positionInsideWorld by remember { mutableStateOf(false) }
     val navigationReady = worldFromMap != null && positionInsideWorld
+
+    LaunchedEffect(Unit) {
+        withContext(Dispatchers.IO) { contextSignals.refresh() }
+    }
 
     val greenMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xFF2CF58A), unlit = true)
@@ -726,6 +734,7 @@ private fun NavigationPage(
             sessionConfiguration = { session: Session, config: Config ->
                 config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
                 config.focusMode = Config.FocusMode.AUTO
+                config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
                 config.depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
                     Config.DepthMode.AUTOMATIC
                 } else {
@@ -737,22 +746,30 @@ private fun NavigationPage(
                     val now = System.currentTimeMillis()
                     val worldFloorY = floorEstimator.update(session, frame.camera.pose)
 
-                    if (!visualBusy && now - lastVisualAttempt >= 650L) {
+                    if (now - lastContextRefresh >= 30_000L) {
+                        lastContextRefresh = now
+                        scope.launch(Dispatchers.IO) { contextSignals.refresh() }
+                    }
+
+                    if (!visualBusy && now - lastVisualAttempt >= 450L) {
                         lastVisualAttempt = now
                         val sample = runCatching { CameraFrameSample.capture(frame) }.getOrNull()
                         if (sample != null) {
                             val cameraPose = Pose(frame.camera.pose.translation, frame.camera.pose.rotationQuaternion)
                             visualBusy = true
                             scope.launch(Dispatchers.Default) {
+                                val prior = contextSignals.currentPrior()
                                 val result = localizer.localize(
                                     sample = sample,
                                     arCameraPose = cameraPose,
-                                    worldFloorY = worldFloorY
+                                    worldFloorY = worldFloorY,
+                                    prior = prior
                                 )
                                 withContext(Dispatchers.Main) {
                                     status = result.message
-                                    if (result.worldFromMap != null) {
-                                        worldFromMap = result.worldFromMap
+                                    worldFromMap = result.worldFromMap
+                                    if (result.phase == VisualLocalizationPhase.LOCKED) {
+                                        contextSignals.rememberSuccessfulLock(result.matchedKeyframeId)
                                     }
                                     visualBusy = false
                                 }
@@ -814,7 +831,7 @@ private fun NavigationPage(
         TopPanel(
             title = if (!navigationReady) "Recognising the room…" else "Finding " + item.name,
             instruction = if (!navigationReady) {
-                "Slowly look around in any direction. There are no required pictures, corners or markers."
+                "Walk normally and show the room naturally. There are no markers or required objects."
             } else {
                 "AisleVia keeps rechecking the room while ARCore tracks your movement."
             },
@@ -834,7 +851,7 @@ private fun NavigationPage(
                 Text(item.name, style = MaterialTheme.typography.titleMedium)
                 Text(
                     if (!navigationReady) {
-                        "Move the camera naturally while the 3D position is verified"
+                        "Automatic room and position check"
                     } else {
                         "Automatic 3D position locked"
                     },
