@@ -13,10 +13,16 @@ android {
 
     defaultConfig {
         applicationId = "com.aislevia.app"
-        minSdk = 28
+        minSdk = 24
         targetSdk = 36
-        versionCode = 10
-        versionName = "0.6.1"
+        versionCode = 11
+        versionName = "0.6.2"
+
+        // The installable build only needs real-phone ABIs. Excluding desktop emulator ABIs
+        // removes over 100 MB of unused OpenCV binaries while retaining older 32-bit phones.
+        ndk {
+            abiFilters += setOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -39,6 +45,9 @@ android {
     }
 
     packaging {
+        // Compress native libraries inside the APK. Android extracts them during installation;
+        // this keeps chat/browser downloads small enough to arrive without truncation.
+        jniLibs.useLegacyPackaging = true
         resources.excludes += setOf(
             "META-INF/AL2.0",
             "META-INF/LGPL2.1",
