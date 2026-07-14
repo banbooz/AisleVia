@@ -47,6 +47,7 @@ import com.aislevia.app.ar.AlignmentQuality
 import com.aislevia.app.ar.AutomaticContextSignals
 import com.aislevia.app.ar.CameraFrameSample
 import com.aislevia.app.ar.FloorPlaneEstimator
+import com.aislevia.app.ar.PassiveRoomAnchorLocalizer
 import com.aislevia.app.ar.PoseMath
 import com.aislevia.app.ar.ProductRecognizer
 import com.aislevia.app.ar.ReferenceImageQuality
@@ -690,6 +691,7 @@ private fun NavigationPage(
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
     val localizer = remember(map) { HierarchicalWorldLocalizer(context.applicationContext) }
+    val passiveAnchor = remember(map) { PassiveRoomAnchorLocalizer(context.applicationContext) }
     val contextSignals = remember(map) { AutomaticContextSignals(context.applicationContext) }
     val floorEstimator = remember(map) { FloorPlaneEstimator() }
     val item = remember(map) { map.items.first() }
@@ -704,6 +706,8 @@ private fun NavigationPage(
     var lastContextRefresh by remember { mutableLongStateOf(0L) }
     var visualBusy by remember { mutableStateOf(false) }
     var positionInsideWorld by remember { mutableStateOf(false) }
+    var passiveAnchorLocked by remember { mutableStateOf(false) }
+    var activeSession by remember { mutableStateOf<Session?>(null) }
     val navigationReady = worldFromMap != null && positionInsideWorld
 
     LaunchedEffect(Unit) {
@@ -740,18 +744,43 @@ private fun NavigationPage(
                 } else {
                     Config.DepthMode.DISABLED
                 }
+                passiveAnchor.configure(session, config)
             },
             onSessionUpdated = { session, frame ->
                 if (frame.camera.trackingState == TrackingState.TRACKING) {
                     val now = System.currentTimeMillis()
                     val worldFloorY = floorEstimator.update(session, frame.camera.pose)
 
+                    if (activeSession !== session) {
+                        activeSession = session
+                        passiveAnchorLocked = false
+                        worldFromMap = null
+                        cameraInMap = null
+                        positionInsideWorld = false
+                    }
+
+                    val passivePose = passiveAnchor.update(frame, worldFloorY)
+                    if (passivePose != null) {
+                        val passiveCameraInMap = passivePose.inverse().compose(frame.camera.pose)
+                        val passivePoseInsideRoom = map.worldModel?.bounds
+                            ?.contains(passiveCameraInMap, marginMetres = 0.75f) == true
+                        if (passivePoseInsideRoom) {
+                            if (!passiveAnchorLocked) {
+                                status = "Room recognised automatically. Loading the route…"
+                            }
+                            passiveAnchorLocked = true
+                            worldFromMap = passivePose
+                        } else if (!passiveAnchorLocked) {
+                            passiveAnchor.resetLock()
+                        }
+                    }
+
                     if (now - lastContextRefresh >= 30_000L) {
                         lastContextRefresh = now
                         scope.launch(Dispatchers.IO) { contextSignals.refresh() }
                     }
 
-                    if (!visualBusy && now - lastVisualAttempt >= 450L) {
+                    if (!passiveAnchorLocked && !visualBusy && now - lastVisualAttempt >= 380L) {
                         lastVisualAttempt = now
                         val sample = runCatching { CameraFrameSample.capture(frame) }.getOrNull()
                         if (sample != null) {
@@ -766,10 +795,12 @@ private fun NavigationPage(
                                     prior = prior
                                 )
                                 withContext(Dispatchers.Main) {
-                                    status = result.message
-                                    worldFromMap = result.worldFromMap
-                                    if (result.phase == VisualLocalizationPhase.LOCKED) {
-                                        contextSignals.rememberSuccessfulLock(result.matchedKeyframeId)
+                                    if (!passiveAnchorLocked) {
+                                        status = result.message
+                                        worldFromMap = result.worldFromMap
+                                        if (result.phase == VisualLocalizationPhase.LOCKED) {
+                                            contextSignals.rememberSuccessfulLock(result.matchedKeyframeId)
+                                        }
                                     }
                                     visualBusy = false
                                 }
@@ -789,7 +820,7 @@ private fun NavigationPage(
                         cameraInMap = null
                     }
 
-                    if (mapTransform != null && !positionInsideWorld) {
+                    if (mapTransform != null && !positionInsideWorld && !passiveAnchorLocked) {
                         worldFromMap = null
                         status = "That result fell outside the scanned room, so it was rejected automatically."
                     } else if (navigationReady && !visualBusy) {
