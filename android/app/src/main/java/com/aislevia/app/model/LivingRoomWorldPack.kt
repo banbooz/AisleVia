@@ -34,6 +34,33 @@ object LivingRoomWorldPack {
     )
 
     /**
+     * The product is part of this fixed proof-room pack, so shoppers must never map it themselves.
+     * Its floor target was measured from the supplied textured 3D scan: the blue Pringles can sits
+     * on the coffee table at approximately (-0.90, 0.10) in the scan coordinate frame.
+     */
+    val defaultStoreMap = StoreMap(
+        version = 5,
+        name = "Living-room proof shop",
+        items = listOf(
+            ItemRecord(
+                id = "pringles",
+                name = "Pringles can",
+                mapPose = PoseRecord(
+                    tx = -0.90f,
+                    ty = worldModel.floorYMetres,
+                    tz = 0.10f,
+                    qx = 0f,
+                    qy = 0f,
+                    qz = 0f,
+                    qw = 1f
+                )
+            )
+        ),
+        minimumLandmarksForLock = 0,
+        worldModel = worldModel
+    )
+
+    /**
      * Two deliberately different crops per permanent zone. Captures from the same zone share a
      * zoneId, so they can improve recognition coverage but can never vote twice toward a lock.
      */
