@@ -49,7 +49,7 @@ import com.aislevia.app.ar.FloorPlaneEstimator
 import com.aislevia.app.ar.PoseMath
 import com.aislevia.app.ar.ProductRecognizer
 import com.aislevia.app.ar.ReferenceImageQuality
-import com.aislevia.app.ar.VisualWorldLocalizer
+import com.aislevia.app.ar.HierarchicalWorldLocalizer
 import com.aislevia.app.data.StoreMapRepository
 import com.aislevia.app.model.ItemRecord
 import com.aislevia.app.model.LandmarkRecord
@@ -560,7 +560,7 @@ private fun AutomaticItemSetupPage(
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
-    val localizer = remember { VisualWorldLocalizer(context.applicationContext) }
+    val localizer = remember { HierarchicalWorldLocalizer(context.applicationContext) }
     val floorEstimator = remember { FloorPlaneEstimator() }
 
     var viewport by remember { mutableStateOf(IntSize.Zero) }
@@ -687,7 +687,7 @@ private fun NavigationPage(
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
-    val localizer = remember(map) { VisualWorldLocalizer(context.applicationContext) }
+    val localizer = remember(map) { HierarchicalWorldLocalizer(context.applicationContext) }
     val floorEstimator = remember(map) { FloorPlaneEstimator() }
     val item = remember(map) { map.items.first() }
 
