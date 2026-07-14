@@ -46,6 +46,13 @@ private data class LearnedImageFeatures(
     val descriptors: Mat
 )
 
+private data class InferenceBuffers(
+    val input: ByteBuffer,
+    val outputs: Array<ByteBuffer>,
+    val outputMap: Map<Int, Any>,
+    val values: Array<FloatArray>
+)
+
 private data class ScoredPixel(val x: Int, val y: Int, val score: Float)
 
 /**
@@ -59,6 +66,8 @@ internal class LearnedVisualPoseMatcher(context: Context) {
     private val appContext = context.applicationContext
     private val featureMap: LearnedFeatureMap by lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::loadMap)
     private val interpreter: Interpreter by lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::loadInterpreter)
+    private val inferenceBuffers: InferenceBuffers by lazy(LazyThreadSafetyMode.SYNCHRONIZED, ::createInferenceBuffers)
+    private val probabilityImage = FloatArray(INPUT_WIDTH * INPUT_HEIGHT)
 
     fun solve(sample: CameraFrameSample): LearnedMetricPose? {
         val live = extract(sample)
@@ -109,24 +118,20 @@ internal class LearnedVisualPoseMatcher(context: Context) {
         val mean = sum / pixels.size
         val variance = max(1e-5, squared / pixels.size - mean * mean)
         val inverseDeviation = (1.0 / sqrt(variance + 1e-5)).toFloat()
-        val input = ByteBuffer.allocateDirect(pixels.size * 4).order(ByteOrder.nativeOrder())
+        val input = inferenceBuffers.input
+        input.clear()
         pixels.forEach { value -> input.putFloat(((value.toInt() and 0xff) - mean).toFloat() * inverseDeviation) }
         input.rewind()
 
-        val outputs = HashMap<Int, Any>()
-        val outputBuffers = Array(interpreter.outputTensorCount) { index ->
-            val tensor = interpreter.getOutputTensor(index)
-            val elements = tensor.shape().fold(1, Int::times)
-            ByteBuffer.allocateDirect(elements * 4).order(ByteOrder.nativeOrder()).also { outputs[index] = it }
-        }
-        interpreter.runForMultipleInputsOutputs(arrayOf(input), outputs)
+        inferenceBuffers.outputs.forEach(ByteBuffer::clear)
+        interpreter.runForMultipleInputsOutputs(arrayOf(input), inferenceBuffers.outputMap)
 
         var denseFeatures: FloatArray? = null
         var keypointLogits: FloatArray? = null
         var reliability: FloatArray? = null
-        outputBuffers.forEachIndexed { index, buffer ->
+        inferenceBuffers.outputs.forEachIndexed { index, buffer ->
             buffer.rewind()
-            val values = FloatArray(buffer.capacity() / 4)
+            val values = inferenceBuffers.values[index]
             buffer.asFloatBuffer().get(values)
             when (interpreter.getOutputTensor(index).shape().getOrNull(1)) {
                 64 -> denseFeatures = values
@@ -146,7 +151,7 @@ internal class LearnedVisualPoseMatcher(context: Context) {
         logits: FloatArray,
         reliability: FloatArray
     ): LearnedImageFeatures {
-        val probabilityImage = FloatArray(INPUT_WIDTH * INPUT_HEIGHT)
+        probabilityImage.fill(0f)
         for (cellY in 0 until GRID_HEIGHT) for (cellX in 0 until GRID_WIDTH) {
             var maximum = Float.NEGATIVE_INFINITY
             for (channel in 0 until 65) {
@@ -276,6 +281,21 @@ internal class LearnedVisualPoseMatcher(context: Context) {
         val model = ByteBuffer.allocateDirect(bytes.size).order(ByteOrder.nativeOrder())
         model.put(bytes).rewind()
         return Interpreter(model, Interpreter.Options().setNumThreads(4))
+    }
+
+    private fun createInferenceBuffers(): InferenceBuffers {
+        val input = ByteBuffer.allocateDirect(INPUT_WIDTH * INPUT_HEIGHT * 4).order(ByteOrder.nativeOrder())
+        val outputMap = HashMap<Int, Any>()
+        val outputs = Array(interpreter.outputTensorCount) { index ->
+            val elements = interpreter.getOutputTensor(index).shape().fold(1, Int::times)
+            ByteBuffer.allocateDirect(elements * 4).order(ByteOrder.nativeOrder()).also { outputMap[index] = it }
+        }
+        return InferenceBuffers(
+            input = input,
+            outputs = outputs,
+            outputMap = outputMap,
+            values = Array(outputs.size) { index -> FloatArray(outputs[index].capacity() / 4) }
+        )
     }
 
     private fun loadMap(): LearnedFeatureMap {
