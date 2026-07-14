@@ -367,8 +367,8 @@ internal class LearnedVisualPoseMatcher(context: Context) {
         private const val MINIMUM_LIVE_FEATURES = 120
         private const val RATIO_THRESHOLD = 0.86f
         private const val MINIMUM_RATIO_MATCHES = 16
-        private const val MINIMUM_POSE_INLIERS = 7
-        private const val MINIMUM_COVERAGE_CELLS = 4
+        private const val MINIMUM_POSE_INLIERS = 9
+        private const val MINIMUM_COVERAGE_CELLS = 5
         private const val POSE_REPROJECTION_PIXELS = 7f
         private const val MAXIMUM_REPROJECTION_ERROR = 5.5f
         private const val MINIMUM_CONFIDENCE = 0.45f

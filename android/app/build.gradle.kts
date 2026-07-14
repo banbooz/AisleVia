@@ -15,8 +15,8 @@ android {
         applicationId = "com.aislevia.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 13
-        versionName = "0.8.0"
+        versionCode = 14
+        versionName = "0.9.0"
 
         // The installable build only needs real-phone ABIs. Excluding desktop emulator ABIs
         // removes over 100 MB of unused OpenCV binaries while retaining older 32-bit phones.
