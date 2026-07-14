@@ -106,48 +106,8 @@ private val appColours = darkColorScheme(
 
 @Composable
 fun AisleViaApp() {
-    val context = LocalContext.current
-    val repository = remember { StoreMapRepository(context.applicationContext) }
-    var page by remember { mutableStateOf(AppPage.HOME) }
-    var savedMap by remember { mutableStateOf(repository.load()) }
-
     MaterialTheme(colorScheme = appColours) {
-        when (page) {
-            AppPage.HOME -> HomePage(
-                map = savedMap,
-                onMap = { page = AppPage.MAP },
-                onNavigate = { page = AppPage.NAVIGATE }
-            )
-
-            AppPage.MAP -> AutomaticItemSetupPage(
-                repository = repository,
-                onFinished = {
-                    savedMap = repository.load()
-                    page = AppPage.HOME
-                },
-                onExit = {
-                    savedMap = repository.load()
-                    page = AppPage.HOME
-                }
-            )
-
-            AppPage.NAVIGATE -> {
-                val map = savedMap
-                if (map == null) {
-                    HomePage(
-                        map = null,
-                        onMap = { page = AppPage.MAP },
-                        onNavigate = {}
-                    )
-                } else {
-                    NavigationPage(
-                        map = map,
-                        repository = repository,
-                        onExit = { page = AppPage.HOME }
-                    )
-                }
-            }
-        }
+        NavigationPage(map = LivingRoomWorldPack.defaultStoreMap)
     }
 }
 
@@ -720,8 +680,7 @@ private fun AutomaticItemSetupPage(
 @Composable
 private fun NavigationPage(
     map: StoreMap,
-    repository: StoreMapRepository,
-    onExit: () -> Unit
+    onExit: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -740,9 +699,8 @@ private fun NavigationPage(
     var lastRouteUpdate by remember { mutableLongStateOf(0L) }
     var lastVisualAttempt by remember { mutableLongStateOf(0L) }
     var visualBusy by remember { mutableStateOf(false) }
-    var floorLocked by remember { mutableStateOf(false) }
     var positionInsideWorld by remember { mutableStateOf(false) }
-    val navigationReady = worldFromMap != null && floorLocked && positionInsideWorld
+    val navigationReady = worldFromMap != null && positionInsideWorld
 
     val greenMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xFF2CF58A), unlit = true)
@@ -750,9 +708,9 @@ private fun NavigationPage(
     val redMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xDDFF3159), unlit = true)
     }
-    val routeMarkers = remember(cameraInMap, item, navigationReady) {
+    val routeArrows = remember(cameraInMap, item, navigationReady) {
         if (navigationReady) {
-            buildRouteMarkers(cameraInMap, item.mapPose.toPose())
+            buildRouteArrows(cameraInMap, item.mapPose.toPose())
         } else {
             emptyList()
         }
@@ -778,7 +736,6 @@ private fun NavigationPage(
                 if (frame.camera.trackingState == TrackingState.TRACKING) {
                     val now = System.currentTimeMillis()
                     val worldFloorY = floorEstimator.update(session, frame.camera.pose)
-                    floorLocked = worldFloorY != null
 
                     if (!visualBusy && now - lastVisualAttempt >= 650L) {
                         lastVisualAttempt = now
@@ -808,16 +765,14 @@ private fun NavigationPage(
                         val mappedCamera = mapTransform.inverse().compose(frame.camera.pose)
                         positionInsideWorld = map.worldModel?.bounds
                             ?.contains(mappedCamera, marginMetres = 0.75f) == true
-                        cameraInMap = if (positionInsideWorld && floorLocked) mappedCamera else null
+                        cameraInMap = if (positionInsideWorld) mappedCamera else null
                         lastRouteUpdate = now
                     } else if (mapTransform == null) {
                         positionInsideWorld = false
                         cameraInMap = null
                     }
 
-                    if (mapTransform != null && !floorLocked) {
-                        status = "Room recognised. Keep moving normally while the floor finishes loading."
-                    } else if (mapTransform != null && floorLocked && !positionInsideWorld) {
+                    if (mapTransform != null && !positionInsideWorld) {
                         worldFromMap = null
                         status = "That result fell outside the scanned room, so it was rejected automatically."
                     } else if (navigationReady && !visualBusy) {
@@ -834,13 +789,15 @@ private fun NavigationPage(
             val mapTransform = worldFromMap
             if (navigationReady && mapTransform != null) {
                 PoseNode(pose = mapTransform) {
-                    routeMarkers.forEach { point ->
-                        CylinderNode(
-                            radius = 0.035f,
-                            height = 0.008f,
-                            position = point,
-                            materialInstance = greenMaterial
-                        )
+                    routeArrows.forEach { arrow ->
+                        arrow.points.forEach { point ->
+                            CylinderNode(
+                                radius = 0.032f,
+                                height = 0.008f,
+                                position = point,
+                                materialInstance = greenMaterial
+                            )
+                        }
                     }
 
                     val target = item.mapPose.toPose().translation
@@ -893,7 +850,7 @@ private fun TopPanel(
     title: String,
     instruction: String,
     status: String,
-    onExit: () -> Unit
+    onExit: (() -> Unit)?
 ) {
     Surface(
         modifier = Modifier
@@ -931,8 +888,10 @@ private fun TopPanel(
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            OutlinedButton(onClick = onExit) {
-                Text("Exit", maxLines = 1)
+            if (onExit != null) {
+                OutlinedButton(onClick = onExit) {
+                    Text("Exit", maxLines = 1)
+                }
             }
         }
     }
@@ -1106,7 +1065,10 @@ private fun constrainReferenceBitmap(source: Bitmap): Bitmap {
     return Bitmap.createScaledBitmap(source, scaledWidth, scaledHeight, true)
 }
 
-private fun buildRouteMarkers(cameraInMap: Pose?, itemPose: Pose): List<Position> {
+private data class RouteArrow(val points: List<Position>)
+
+/** Builds small floor chevrons that make the direction clearer than undirected dots. */
+private fun buildRouteArrows(cameraInMap: Pose?, itemPose: Pose): List<RouteArrow> {
     val camera = cameraInMap ?: return emptyList()
     val start = camera.translation
     val end = itemPose.translation
@@ -1120,6 +1082,10 @@ private fun buildRouteMarkers(cameraInMap: Pose?, itemPose: Pose): List<Position
     val usableDistance = distance - startClearance - endClearance
     if (usableDistance <= 0f) return emptyList()
     val count = ceil(usableDistance / 0.55f).toInt().coerceIn(1, 9)
+    val directionX = dx / distance
+    val directionZ = dz / distance
+    val perpendicularX = -directionZ
+    val perpendicularZ = directionX
     return (0 until count).map { index ->
         val distanceAlongRoute = if (count == 1) {
             startClearance + usableDistance * 0.5f
@@ -1127,10 +1093,21 @@ private fun buildRouteMarkers(cameraInMap: Pose?, itemPose: Pose): List<Position
             startClearance + usableDistance * index.toFloat() / (count - 1).toFloat()
         }
         val fraction = distanceAlongRoute / distance
-        Position(
-            x = start[0] + dx * fraction,
-            y = 0.035f,
-            z = start[2] + dz * fraction
+        val centreX = start[0] + dx * fraction
+        val centreZ = start[2] + dz * fraction
+        val headX = centreX + directionX * 0.12f
+        val headZ = centreZ + directionZ * 0.12f
+        val wingCentreX = centreX - directionX * 0.025f
+        val wingCentreZ = centreZ - directionZ * 0.025f
+        RouteArrow(
+            points = listOf(
+                Position(headX, 0.035f, headZ),
+                Position(centreX + directionX * 0.045f, 0.035f, centreZ + directionZ * 0.045f),
+                Position(centreX - directionX * 0.035f, 0.035f, centreZ - directionZ * 0.035f),
+                Position(centreX - directionX * 0.11f, 0.035f, centreZ - directionZ * 0.11f),
+                Position(wingCentreX + perpendicularX * 0.08f, 0.035f, wingCentreZ + perpendicularZ * 0.08f),
+                Position(wingCentreX - perpendicularX * 0.08f, 0.035f, wingCentreZ - perpendicularZ * 0.08f)
+            )
         )
     }
 }
