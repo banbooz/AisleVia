@@ -123,7 +123,7 @@ private val entryColours = darkColorScheme(
 private fun CameraPermissionScreen(onRequestPermission: () -> Unit) {
     EntryScreen(
         title = "Camera permission needed",
-        message = "AisleVia cannot scan landmarks or position products until camera access is allowed.",
+        message = "AisleVia uses the camera to recognise the saved room automatically and place the route arrows on the floor.",
         primaryText = "Allow camera",
         onPrimary = onRequestPermission
     )
