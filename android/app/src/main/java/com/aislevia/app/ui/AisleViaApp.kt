@@ -44,11 +44,14 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.aislevia.app.ar.LandmarkRelocalizer
 import com.aislevia.app.ar.AlignmentQuality
+import com.aislevia.app.ar.FloorPlaneEstimator
 import com.aislevia.app.ar.PoseMath
 import com.aislevia.app.ar.ProductRecognizer
+import com.aislevia.app.ar.ReferenceImageQuality
 import com.aislevia.app.data.StoreMapRepository
 import com.aislevia.app.model.ItemRecord
 import com.aislevia.app.model.LandmarkRecord
+import com.aislevia.app.model.LivingRoomWorldPack
 import com.aislevia.app.model.PoseRecord
 import com.aislevia.app.model.StoreMap
 import com.google.ar.core.AugmentedImage
@@ -78,14 +81,11 @@ import kotlin.math.sqrt
 private enum class AppPage { HOME, MAP, NAVIGATE }
 private enum class MapStep { ENTRANCE, DIRECTION, LANDMARKS, ITEM_GROUP, ITEM, COMPLETE }
 
-private const val requiredNavigationMatches = 2
+private const val requiredNavigationMatches = 3
 private const val maximumReferenceImageEdge = 768
-private const val targetRoomKeyframes = 30
-private const val minimumRoomKeyframes = 6
-private const val automaticCaptureStableFrames = 6
-private const val minimumKeyframeRotationDegrees = 8f
-private const val minimumKeyframeTranslationMetres = 0.18f
 private const val customerRecognitionWindowMillis = 5_000L
+private val targetRoomKeyframes = LivingRoomWorldPack.referenceCaptures.size
+private val minimumRoomKeyframes = targetRoomKeyframes
 
 // Older v0.3 maps contain three overlapping fireplace crops. Keeping the centre
 // view avoids making ARCore distinguish nearly identical images from one wall.
@@ -156,7 +156,8 @@ private fun HomePage(
     onNavigate: () -> Unit
 ) {
     val mapReady = map != null &&
-        map.version >= 2 &&
+        map.version >= 4 &&
+        map.worldModel?.id == LivingRoomWorldPack.worldModel.id &&
         map.landmarks.count { it.referenceType == "room" } >= minimumRoomKeyframes &&
         map.items.isNotEmpty()
 
@@ -168,10 +169,10 @@ private fun HomePage(
             verticalArrangement = Arrangement.Center
         ) {
             Text("AISLEVIA", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-            Text("Automatic indoor AR", style = MaterialTheme.typography.headlineLarge)
+            Text("Scan-backed indoor AR", style = MaterialTheme.typography.headlineLarge)
             Spacer(Modifier.height(12.dp))
             Text(
-                "A staff member maps a space once. Customer sessions then recognise fixed visual landmarks and align the digital twin automatically.",
+                "The supplied metric 3D scan fixes the room scale and floor. Permanent visual zones reconnect the phone to that world on later visits.",
                 color = Color(0xFFC8D8E4)
             )
             Spacer(Modifier.height(22.dp))
@@ -187,9 +188,9 @@ private fun HomePage(
                     )
                     Text(
                         if (!mapReady) {
-                            "A visual sweep with at least $minimumRoomKeyframes usable keyframes is required. Scan the room once."
+                            "Calibrate the supplied 3D room once using $minimumRoomKeyframes sharp fixed references."
                         } else {
-                            "${map?.landmarks?.size ?: 0} landmarks · ${map?.items?.size ?: 0} item location(s)"
+                            "3D scan · ${map?.landmarks?.size ?: 0} references · ${map?.items?.size ?: 0} item location(s)"
                         },
                         color = Color(0xFFAEC4D3)
                     )
@@ -198,7 +199,7 @@ private fun HomePage(
 
             Spacer(Modifier.height(18.dp))
             Button(onClick = onMap, modifier = Modifier.fillMaxWidth()) {
-                Text(if (!mapReady) "Run full room and item scan" else "Remap this room")
+                Text(if (!mapReady) "Calibrate 3D room and item" else "Recalibrate this room")
             }
             Spacer(Modifier.height(10.dp))
             Button(
@@ -242,7 +243,6 @@ private fun MappingPage(
     var stableCaptureFrames by remember { mutableIntStateOf(0) }
     var previousCapturePose by remember { mutableStateOf<Pose?>(null) }
     var previousCaptureWidth by remember { mutableStateOf<Float?>(null) }
-    var lastKeyframeCameraPose by remember { mutableStateOf<Pose?>(null) }
 
     LaunchedEffect(Unit) {
         repository.clear()
@@ -258,7 +258,13 @@ private fun MappingPage(
         val origin = worldFromMap ?: return
         val session = arSession ?: return
         val keyframeNumber = landmarks.count { it.referenceType == "room" } + 1
-        val referenceId = "room-keyframe-${keyframeNumber.toString().padStart(2, '0')}"
+        val reference = LivingRoomWorldPack.referenceCaptures.getOrNull(keyframeNumber - 1)
+        if (reference == null) {
+            step = MapStep.ITEM_GROUP
+            status = "Fixed room references complete. Frame the Pringles and nearby products."
+            return
+        }
+        val referenceId = reference.id
         val cameraPose = frame.camera.pose
         val bitmap = runCatching {
             frame.captureCameraBitmap()?.let(::centreCrop)
@@ -268,10 +274,15 @@ private fun MappingPage(
             resetAutomaticCapture()
             return
         }
+        val assessment = ReferenceImageQuality.assess(bitmap)
+        if (!assessment.accepted) {
+            status = assessment.message
+            resetAutomaticCapture()
+            return
+        }
         busy = true
-        lastKeyframeCameraPose = cameraPose
         resetAutomaticCapture()
-        status = "Saving visual keyframe $keyframeNumber/$targetRoomKeyframes…"
+        status = "Checking ${reference.name.lowercase()} detail…"
         scope.launch {
             when (val result = validateReferenceImage(
                 session = session,
@@ -287,24 +298,31 @@ private fun MappingPage(
                     val mapImagePose = origin.inverse().compose(worldImagePose)
                     landmarks += LandmarkRecord(
                         id = referenceId,
-                        name = "Room keyframe $keyframeNumber",
+                        name = reference.name,
                         imageFile = imageFile,
                         physicalWidthMetres = measurement.widthMetres,
                         mapPose = PoseRecord.fromPose(mapImagePose),
-                        referenceType = "room"
+                        referenceType = "room",
+                        zoneId = reference.zoneId
                     )
-                    repository.save(StoreMap(landmarks = landmarks.toList()))
+                    repository.save(
+                        StoreMap(
+                            landmarks = landmarks.toList(),
+                            worldModel = LivingRoomWorldPack.worldModel
+                        )
+                    )
 
                     if (keyframeNumber < targetRoomKeyframes) {
-                        status = "Saved $keyframeNumber/$targetRoomKeyframes · keep turning slowly."
+                        val next = LivingRoomWorldPack.referenceCaptures[keyframeNumber]
+                        status = "Saved $keyframeNumber/$targetRoomKeyframes. Next: ${next.instruction}"
                     } else {
                         step = MapStep.ITEM_GROUP
-                        status = "Visual room map complete. Frame the Pringles and nearby products."
+                        status = "Four independent fixed zones saved. Frame the Pringles and nearby products."
                     }
                 }
 
                 is AddImageResult.LowQuality -> {
-                    status = "That view had too little detail. Keep sweeping; another view will be tried automatically."
+                    status = "ARCore found too few stable details. Move closer, hold still and retry this same landmark."
                 }
 
                 is AddImageResult.Error -> {
@@ -324,6 +342,12 @@ private fun MappingPage(
         }.getOrNull()
         if (bitmap == null) {
             status = "Camera image was not ready. Hold the frame still again."
+            resetAutomaticCapture()
+            return
+        }
+        val assessment = ReferenceImageQuality.assess(bitmap)
+        if (!assessment.accepted) {
+            status = assessment.message
             resetAutomaticCapture()
             return
         }
@@ -361,7 +385,12 @@ private fun MappingPage(
                         referenceType = "item-group",
                         recognitionLabels = detectedItemLabels
                     )
-                    repository.save(StoreMap(landmarks = landmarks.toList()))
+                    repository.save(
+                        StoreMap(
+                            landmarks = landmarks.toList(),
+                            worldModel = LivingRoomWorldPack.worldModel
+                        )
+                    )
                     step = MapStep.ITEM
                     status = "Group recognised. Point at the exact base of $detectedItemName."
                 }
@@ -400,21 +429,12 @@ private fun MappingPage(
             onSessionUpdated = { _, frame ->
                 latestFrame[0] = frame
                 tracking = frame.camera.trackingState == TrackingState.TRACKING
-                val automaticStep = step == MapStep.LANDMARKS || step == MapStep.ITEM_GROUP
+                val automaticStep = step == MapStep.ITEM_GROUP
                 if (tracking && automaticStep && !busy && viewport != IntSize.Zero) {
-                    val lastKeyframe = lastKeyframeCameraPose
-                    val hasNewViewpoint = step != MapStep.LANDMARKS || lastKeyframe == null ||
-                        PoseMath.translationDistance(lastKeyframe, frame.camera.pose) >=
-                        minimumKeyframeTranslationMetres ||
-                        PoseMath.rotationDistanceDegrees(lastKeyframe, frame.camera.pose) >=
-                        minimumKeyframeRotationDegrees
                     val measurement = framedPlaneMeasurement(frame, viewport)
-                    if (!hasNewViewpoint) {
+                    if (measurement == null) {
                         resetAutomaticCapture()
-                        status = "Keep turning slowly · ${landmarks.count { it.referenceType == "room" }}/$targetRoomKeyframes saved."
-                    } else if (measurement == null) {
-                        resetAutomaticCapture()
-                        status = "Sweep slowly across walls, shelves and signs until the frame finds detail."
+                        status = "Frame the product group and move slowly until its surface is found."
                     } else {
                         val previousPose = previousCapturePose
                         val previousWidth = previousCaptureWidth
@@ -425,24 +445,12 @@ private fun MappingPage(
                         stableCaptureFrames = if (stable) stableCaptureFrames + 1 else 1
                         previousCapturePose = measurement.centrePose
                         previousCaptureWidth = measurement.widthMetres
-                        val requiredStableFrames = if (step == MapStep.LANDMARKS) {
-                            automaticCaptureStableFrames
-                        } else {
-                            18
-                        }
+                        val requiredStableFrames = 18
                         val progress = (stableCaptureFrames * 100 / requiredStableFrames).coerceIn(5, 100)
-                        status = if (step == MapStep.LANDMARKS) {
-                            "Mapping view ${landmarks.count { it.referenceType == "room" } + 1}/$targetRoomKeyframes · $progress%"
-                        } else {
-                            "Surface found · hold still · $progress%"
-                        }
+                        status = "Surface found · hold still · $progress%"
 
                         if (stableCaptureFrames >= requiredStableFrames) {
-                            when (step) {
-                                MapStep.LANDMARKS -> captureRoomReference(frame, measurement)
-                                MapStep.ITEM_GROUP -> captureItemGroupReference(frame, measurement)
-                                else -> Unit
-                            }
+                            captureItemGroupReference(frame, measurement)
                         }
                     }
                 } else if (!automaticStep) {
@@ -458,20 +466,22 @@ private fun MappingPage(
 
         TopPanel(
             title = when (step) {
-                MapStep.ENTRANCE -> "1 · Set the entrance"
-                MapStep.DIRECTION -> "2 · Set the shop direction"
-                MapStep.LANDMARKS -> "3 · Automatic room sweep"
+                MapStep.ENTRANCE -> "1 · Align the scan floor"
+                MapStep.DIRECTION -> "2 · Align the scan direction"
+                MapStep.LANDMARKS -> "3 · Fixed reference ${landmarks.count { it.referenceType == "room" } + 1}/$targetRoomKeyframes"
                 MapStep.ITEM_GROUP -> "4 · AI scan the item group"
                 MapStep.ITEM -> "5 · Confirm the exact item point"
                 MapStep.COMPLETE -> "Map complete"
             },
             instruction = when (step) {
-                MapStep.ENTRANCE -> "Aim at the floor where a customer enters."
-                MapStep.DIRECTION -> "Aim at the floor directly in front of the fireplace centre."
-                MapStep.LANDMARKS -> "Stand near the centre and slowly turn once. The app pins useful views automatically."
+                MapStep.ENTRANCE -> "Aim at the carpet directly below the centre of the fireplace."
+                MapStep.DIRECTION -> "Aim at the carpet directly below the centre of the television."
+                MapStep.LANDMARKS -> LivingRoomWorldPack.referenceCaptures
+                    .getOrNull(landmarks.count { it.referenceType == "room" })
+                    ?.instruction.orEmpty()
                 MapStep.ITEM_GROUP -> "Frame the Pringles and nearby products. Hold still when the surface is found."
                 MapStep.ITEM -> "AI suggestion: $detectedItemName. Aim at the item's exact base."
-                MapStep.COMPLETE -> "Customer mode can now recognise the room without entrance points."
+                MapStep.COMPLETE -> "The item and references are now registered to the metric 3D scan."
             },
             status = if (tracking) status else "Move the phone slowly until tracking starts.",
             onExit = onExit
@@ -482,21 +492,21 @@ private fun MappingPage(
         BottomActionPanel(
             caption = when (step) {
                 MapStep.LANDMARKS ->
-                    "Visual keyframes ${landmarks.count { it.referenceType == "room" }}/$targetRoomKeyframes · automatic"
+                    "Sharp fixed references ${landmarks.count { it.referenceType == "room" }}/$targetRoomKeyframes · 4 independent zones"
                 MapStep.ITEM_GROUP -> "AI item scan · automatic capture"
                 MapStep.COMPLETE -> "Saved ${landmarks.size} landmarks and ${items.size} item."
                 else -> "One-time staff setup"
             },
             buttonText = when (step) {
-                MapStep.ENTRANCE -> "Save entrance point"
-                MapStep.DIRECTION -> "Save room direction"
-                MapStep.LANDMARKS -> if (busy) "Processing…" else "Capture landmark"
+                MapStep.ENTRANCE -> "Set fireplace floor origin"
+                MapStep.DIRECTION -> "Set television direction"
+                MapStep.LANDMARKS -> if (busy) "Checking detail…" else "Save this fixed reference"
                 MapStep.ITEM_GROUP -> if (busy) "Analysing…" else "Scan this item group"
                 MapStep.ITEM -> "Save exact item position"
                 MapStep.COMPLETE -> "Finish mapping"
             },
             enabled = tracking && !busy,
-            showButton = step != MapStep.LANDMARKS && step != MapStep.ITEM_GROUP,
+            showButton = step != MapStep.ITEM_GROUP,
             onClick = {
                 val frame = latestFrame[0]
                 if (frame == null || viewport == IntSize.Zero) {
@@ -512,7 +522,7 @@ private fun MappingPage(
                         } else {
                             entrancePose = hit
                             step = MapStep.DIRECTION
-                            status = "Entrance saved. Now choose a point well inside the room."
+                            status = "3D scan origin saved. Now point at the floor below the television."
                         }
                     }
 
@@ -521,19 +531,21 @@ private fun MappingPage(
                         val entrance = entrancePose
                         when {
                             hit == null || entrance == null -> status = "No floor found under the crosshair."
-                            PoseMath.horizontalDistance(entrance, hit) < 1.0f ->
-                                status = "Choose a point at least one metre from the entrance."
+                            PoseMath.horizontalDistance(entrance, hit) < 1.4f ->
+                                status = "The television point must be at least 1.4 metres from the fireplace."
                             else -> {
                                 worldFromMap = PoseMath.floorAlignedOrigin(entrance, hit)
                                 step = MapStep.LANDMARKS
-                                status = "Slowly turn around the room. Useful views will be saved automatically."
+                                status = LivingRoomWorldPack.referenceCaptures.first().instruction
                             }
                         }
                     }
 
                     MapStep.LANDMARKS -> {
                         val measurement = framedPlaneMeasurement(frame, viewport)
-                        if (measurement == null) status = "Keep scanning the surface; capture is automatic."
+                        if (measurement == null) {
+                            status = "No stable wall surface under the guide. Move slowly around the target and retry."
+                        }
                         else captureRoomReference(frame, measurement)
                     }
 
@@ -560,7 +572,8 @@ private fun MappingPage(
                             repository.save(
                                 StoreMap(
                                     landmarks = landmarks.toList(),
-                                    items = items.toList()
+                                    items = items.toList(),
+                                    worldModel = LivingRoomWorldPack.worldModel
                                 )
                             )
                             step = MapStep.COMPLETE
@@ -593,6 +606,7 @@ private fun NavigationPage(
     val relocalizer = remember(map) {
         LandmarkRelocalizer(minimumMatches = requiredNavigationMatches)
     }
+    val floorEstimator = remember(map) { FloorPlaneEstimator() }
     val landmarkById = remember(navigationLandmarks) { navigationLandmarks.associateBy { it.id } }
     val item = remember(map) { map.items.first() }
 
@@ -602,9 +616,13 @@ private fun NavigationPage(
     var lastRouteUpdate by remember { mutableLongStateOf(0L) }
     var previousAlignmentKey by remember { mutableStateOf("") }
     var databaseReady by remember { mutableStateOf(false) }
+    var navigationSession by remember { mutableStateOf<Session?>(null) }
     var recognitionStartedAt by remember { mutableLongStateOf(0L) }
     var recognitionWindowComplete by remember { mutableStateOf(false) }
-    val navigationReady = recognitionWindowComplete && alignment.canRenderNavigation
+    var floorLocked by remember { mutableStateOf(false) }
+    var positionInsideWorld by remember { mutableStateOf(false) }
+    val navigationReady = recognitionWindowComplete && alignment.canRenderNavigation &&
+        floorLocked && positionInsideWorld
 
     val greenMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xFF2CF58A), unlit = true)
@@ -637,6 +655,7 @@ private fun NavigationPage(
                 }
             },
             onSessionCreated = { session ->
+                navigationSession = session
                 scope.launch {
                     status = "Preparing the saved visual map…"
                     val database = withContext(Dispatchers.Default) {
@@ -657,14 +676,19 @@ private fun NavigationPage(
             },
             onSessionUpdated = { _, frame ->
                 if (frame.camera.trackingState == TrackingState.TRACKING && databaseReady) {
+                    val worldFloorY = navigationSession?.let { session ->
+                        floorEstimator.update(session, frame.camera.pose)
+                    }
+                    floorLocked = worldFloorY != null
                     frame.getUpdatedTrackables(AugmentedImage::class.java).forEach { image ->
                         if (image.trackingState == TrackingState.TRACKING) {
                             val record = landmarkById[image.name]
                             if (record != null) {
                                 alignment = relocalizer.observe(
-                                    landmarkId = record.id,
+                                    landmarkId = record.zoneId ?: record.id,
                                     detectedWorldPose = image.centerPose,
-                                    storedMapPose = record.mapPose.toPose()
+                                    storedMapPose = record.mapPose.toPose(),
+                                    worldFloorY = worldFloorY
                                 )
                             }
                         }
@@ -677,7 +701,7 @@ private fun NavigationPage(
                     if (!recognitionWindowComplete && elapsed < customerRecognitionWindowMillis) {
                         val secondsRemaining =
                             ((customerRecognitionWindowMillis - elapsed + 999L) / 1_000L).coerceAtLeast(1L)
-                        status = "Visual fix: ${secondsRemaining}s · ${alignment.recentMatches} keyframe(s) connected."
+                        status = "Visual fix: ${secondsRemaining}s · ${alignment.recentMatches} fixed zone(s) connected."
                     } else {
                         if (!recognitionWindowComplete) {
                             recognitionWindowComplete = true
@@ -691,9 +715,9 @@ private fun NavigationPage(
                                 AlignmentQuality.SEARCHING ->
                                     "Five-second scan complete. Keep turning slowly so the room can be located."
                                 AlignmentQuality.CHECKING ->
-                                    "Connected ${alignment.recentMatches} keyframe(s). Need $requiredNavigationMatches agreeing views."
+                                    "Connected ${alignment.recentMatches} fixed zone(s). Need $requiredNavigationMatches agreeing zones."
                                 AlignmentQuality.LOCKED ->
-                                    "Room located from ${alignment.agreeingMatches} agreeing keyframes. The virtual route is live."
+                                    "Room located from ${alignment.agreeingMatches} agreeing zones. Checking its 3D bounds and floor."
                                 AlignmentQuality.STALE ->
                                     "Alignment confidence dropped. Turn toward mapped room detail again."
                             }
@@ -701,11 +725,23 @@ private fun NavigationPage(
                     }
 
                     val mapTransform = alignment.pose
-                    if (navigationReady && mapTransform != null && now - lastRouteUpdate > 180L) {
-                        cameraInMap = mapTransform.inverse().compose(frame.camera.pose)
+                    if (mapTransform != null && now - lastRouteUpdate > 180L) {
+                        val mappedCamera = mapTransform.inverse().compose(frame.camera.pose)
+                        positionInsideWorld = map.worldModel?.bounds
+                            ?.contains(mappedCamera, marginMetres = 0.75f) == true
+                        cameraInMap = if (positionInsideWorld && floorLocked) mappedCamera else null
                         lastRouteUpdate = now
-                    } else if (!navigationReady) {
+                    } else if (mapTransform == null) {
+                        positionInsideWorld = false
                         cameraInMap = null
+                    }
+
+                    if (alignment.canRenderNavigation && !floorLocked) {
+                        status = "The room matches, but the floor is not fixed yet. Aim down and slowly scan the carpet."
+                    } else if (alignment.canRenderNavigation && floorLocked && !positionInsideWorld) {
+                        status = "That visual pose falls outside the supplied 3D scan, so it was rejected. Show another fixed zone."
+                    } else if (navigationReady) {
+                        status = "3D pose locked: ${alignment.agreeingMatches} zones agree and the scanned floor is aligned."
                     }
                 }
             },
@@ -720,8 +756,8 @@ private fun NavigationPage(
                 PoseNode(pose = mapTransform) {
                     routeMarkers.forEach { point ->
                         CylinderNode(
-                            radius = 0.045f,
-                            height = 0.010f,
+                            radius = 0.035f,
+                            height = 0.008f,
                             position = point,
                             materialInstance = greenMaterial
                         )
@@ -729,9 +765,9 @@ private fun NavigationPage(
 
                     val target = item.mapPose.toPose().translation
                     CylinderNode(
-                        radius = 0.06f,
-                        height = 0.16f,
-                        position = Position(target[0], target[1] + 0.10f, target[2]),
+                        radius = 0.055f,
+                        height = 0.08f,
+                        position = Position(target[0], target[1] + 0.05f, target[2]),
                         materialInstance = redMaterial
                     )
                 }
@@ -741,9 +777,9 @@ private fun NavigationPage(
         TopPanel(
             title = if (!navigationReady) "Connecting visual map…" else "Finding ${item.name}",
             instruction = if (!navigationReady) {
-                "Slowly show the room for five seconds while nearby keyframes connect."
+                "Show several fixed zones, then aim at the carpet so the scan can verify both pose and floor."
             } else {
-                "The virtual-world route is projected live as green floor markers."
+                "The route is drawn only after the visual pose fits inside the supplied metric 3D world."
             },
             status = status,
             onExit = onExit
@@ -760,7 +796,7 @@ private fun NavigationPage(
             Column(Modifier.padding(16.dp)) {
                 Text(item.name, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (!navigationReady) "Building a visual position fix" else "Virtual route aligned to the room",
+                    if (!navigationReady) "Verifying fixed zones, 3D bounds and floor" else "Virtual route aligned to the scanned room",
                     color = Color(0xFFAEC4D3)
                 )
             }

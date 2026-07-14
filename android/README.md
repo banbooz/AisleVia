@@ -1,71 +1,54 @@
-# AisleVia native Android prototype v0.4.0
+# AisleVia native Android prototype v0.5.0
 
-## Automatic visual keyframe map
+## Scan-backed living-room world
 
-- staff mode captures up to 30 visually useful keyframes during one slow room sweep
-- captures are spaced by camera movement, quality checked and pinned into the same map coordinate system
-- named picture/fireplace/bookcase prompts are no longer required
-- the complete ARCore image database is built once and serialized instead of being rebuilt after every added image
-- customer mode collects all available matches during a five-second visual scan before revealing navigation
-- the virtual route is continuously reprojected into the live camera view as the customer moves
+Version 0.5 packages the supplied RealityCapture phone scan as a metric virtual world rather than
+treating unrelated camera crops as the world itself.
 
-ARCore Augmented Images recognise textured planar views rather than a complete 3D room mesh. The sweep therefore favours walls, shelf fronts, aisle signs and other stable detailed surfaces. A true obstacle-aware route still requires a shop navmesh or walkable-path graph in the virtual-world data.
+- measured source extent: about 4.8 × 5.0 × 2.3 metres
+- mobile asset: 107,163 vertices, 154,864 triangles and a 2K texture
+- model coordinates: +Y up, fireplace-floor centre at the origin and -Z toward the television
+- measured world bounds and floor height are stored with every map
+- the original 8K texture was reduced to 2K to avoid a roughly 268 MB uncompressed GPU texture
 
-## Faster room recognition
+The prepared GLB, texture and machine-readable manifest are under
+`app/src/main/assets/world/living_room/`. `tools/recenter_glb.py` performs the metric origin shift.
 
-- customer mode now locks after two spatially separated landmarks agree, so one slow turn is normally enough
-- observations remain available for 90 seconds, allowing a complete slow scan without forgetting the first details
-- the three overlapping fireplace crops have been reduced to one distinct fireplace reference
-- product-group images and redundant old fireplace crops are excluded from room relocalisation
-- saved images are capped at 768 pixels on their longest edge and loaded progressively to reduce UI stalls
-- any tracked ARCore image pose can contribute instead of requiring the landmark to remain fully visible
+## One-time calibration
 
-## Crash-safety update
+1. Aim at the carpet directly below the fireplace centre to place the scan origin.
+2. Aim at the carpet directly below the television centre to set the scan direction.
+3. Capture eight named fixed references across four permanent zones: parrot picture, right
+   bookcase, left alcove and fireplace.
+4. The app rejects dark, overexposed, blurry, featureless or ARCore-low-quality captures.
+5. Scan the Pringles group, then point to the exact base of the can.
 
-- waits for camera permission before creating any AR view
-- captures the short-lived ARCore camera frame on the AR thread instead of retaining it inside background work
-- copies the camera pose before asynchronous image and map processing
-- records an unexpected crash locally and shows a copyable report after restart
+Two views from the same wall share one zone ID. They increase recognition coverage but can never
+count as two independent votes.
 
-This is the native ARCore version of AisleVia. It is separate from the browser demo in the repository root.
+## Confidence-gated customer navigation
 
-## Why v0.2 remaps the room
-
-The first Android build could accept one landmark as a full room alignment. A false or badly scaled match could therefore place the red target and green route at the wrong pose. Landmark widths were also estimated rather than measured.
-
-Version 0.2 deliberately rejects maps made by that build.
-
-Version 0.3 automatically captures landmark and item-group frames after the
-detected surface remains stable. The capture check can use a narrower measured
-span on the same plane, so wall sections beside arches no longer require the
-entire frame to be one large detected plane. Mapping text is capped to prevent
-overlap on phones using larger font settings.
-
-## One-time visual mapping
-1. Set the entrance and a forward floor point.
-2. Stand near the centre and slowly sweep the phone around the room while the app automatically collects 30 useful visual keyframes.
-3. Each accepted keyframe lies on a detected real plane. The app measures its physical width and rejects blurry or featureless views automatically.
-4. Scan the Pringles and nearby items. Bundled on-device ML Kit text recognition and image labelling suggest the product name; the camera image is not uploaded.
-5. Aim at the exact point where the item touches its shelf or table and save it in the same map coordinate system.
-
-In a real shop, use fixed textured shelf fronts, aisle signs, end-cap artwork and architectural details. Avoid moving stock displays and soft furniture as primary room references.
-
-## Confidence-gated navigation
-
-- A single image match never shows navigation.
-- At least two references from different parts of the map must produce poses that agree within bounded translation and rotation limits.
-- Outlier matches are ignored.
-- The route and target are hidden when the last verified consensus becomes stale.
-- Route dots are smaller, capped at nine and start 65 cm in front of the phone.
-- The old large red sphere is replaced with a small item pin.
+- Three spatially separated fixed zones must agree before the map can lock.
+- A sizeable upward ARCore floor plane must also be detected; tables and shelves are ignored.
+- Landmark-derived pitch, roll and vertical drift are removed. The map is forced onto the detected
+  floor while retaining its visual X/Z position and yaw.
+- A resulting camera pose outside the supplied 3D model bounds is rejected.
+- Navigation disappears when confidence becomes stale.
+- The target is a small 11 cm-wide pin and route dots are 7 cm wide, preventing the old giant blobs.
 
 ## Build
 
-Open the `android` folder in Android Studio and run the `app` configuration on an ARCore-supported Android phone. The repository workflow also builds a debug APK on changes under `android/`.
+Open the `android` folder in Android Studio and run the `app` configuration on an ARCore-supported
+Android phone. The repository workflow builds a debug APK for pull requests and changes to `main`.
 
-## Prototype limits
+## Honest prototype limits
 
-- Product recognition is a mapping assistant, not an unattended stock database. Staff must still point to the exact product position and should verify the suggested name.
-- ARCore Augmented Images work best with flat, textured, well-lit references. Product groups can be scanned together only when their visible fronts form a sufficiently flat reference view.
-- This prototype records one selected item after its group scan. The data model supports multiple items and visual reference IDs, but the multi-item catalogue editor is not built yet.
-- All map data, reference photos and ML processing stay on the phone.
+This is a substantial improvement over random flat keyframes, but it is not yet a full
+feature-map/VPS engine. The 3D mesh supplies the metric coordinate system, floor and physical
+bounds; ARCore visual references reconnect a live session to it. A production shop version should
+match live camera features directly against 3D scan keypoints and use a walkable navmesh for paths
+around shelves and furniture.
+
+The eight references are deliberately fixed architectural or printed details. People, cushions,
+plants, television content and tabletop clutter are excluded because they move. All reference
+capture, OCR, labelling and map data stay on the phone.

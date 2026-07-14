@@ -1,8 +1,12 @@
-# AisleVia AR — living-room proof of concept v2
+# AisleVia AR — living-room proof of concept
 
-A browser-based augmented-reality prototype that treats a living room as a pretend shop. It aligns a photo-built digital twin to the real room, places route arrows on the floor, and highlights a selected item.
+This repository contains a browser experiment and the native Android ARCore prototype. The Android
+app is the current implementation and now packages the supplied metric 3D room scan.
 
-## What changed in v2
+See [`android/README.md`](android/README.md) for the v0.5 scan-backed tracking design, calibration
+flow, build instructions and current limitations.
+
+## Browser experiment
 
 - Two-point room alignment: doorway floor plus the carpet in front of the fireplace
 - Direction and scale are calculated from those two real-world points
@@ -22,8 +26,9 @@ Open the GitHub Pages site in Chrome on an ARCore-supported Android phone.
 5. Select an item.
 6. If the highlight is not exact, tap **Teach exact item spot**, aim at the base of the real item, and save.
 
-## Important limitation
+## Browser limitation
 
-This version aligns the digital twin with two user-supplied reference points. It does not yet perform automatic visual relocalisation from the photographs. True automatic room recognition would require a visual feature map from a LiDAR/photogrammetry scan, a persistent spatial-anchor service, or a fixed visual marker in the room.
+The GitHub Pages version still uses two user-supplied points. The native Android app adds fixed-zone
+visual relocalisation, floor locking and 3D-scan bounds checking.
 
 Camera frames are handled by the phone's XR system and are not uploaded by this code.

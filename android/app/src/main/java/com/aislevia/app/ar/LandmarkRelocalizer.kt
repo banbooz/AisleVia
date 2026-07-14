@@ -51,10 +51,14 @@ class LandmarkRelocalizer(
         landmarkId: String,
         detectedWorldPose: Pose,
         storedMapPose: Pose,
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        worldFloorY: Float? = null
     ): AlignmentSnapshot {
         // worldFromMap × mapFromLandmark = worldFromLandmark
-        val candidate = detectedWorldPose.compose(storedMapPose.inverse())
+        val unconstrainedCandidate = detectedWorldPose.compose(storedMapPose.inverse())
+        val candidate = worldFloorY?.let {
+            PoseMath.floorConstrainedPose(unconstrainedCandidate, it)
+        } ?: unconstrainedCandidate
         observations[landmarkId] = Observation(landmarkId, candidate, storedMapPose, nowMillis)
         return update(nowMillis, triggeringLandmarkId = landmarkId)
     }

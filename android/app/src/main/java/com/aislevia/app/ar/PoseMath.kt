@@ -50,6 +50,18 @@ object PoseMath {
         return Pose(centre, quaternionFromBasis(right, normal, down))
     }
 
+    /** Removes image-induced pitch/roll and places the metric map exactly on the detected floor. */
+    fun floorConstrainedPose(pose: Pose, worldFloorY: Float): Pose {
+        val translation = pose.translation
+        val forward = pose.rotateVector(floatArrayOf(0f, 0f, -1f))
+        val yaw = atan2(-forward[0], -forward[2])
+        val half = yaw * 0.5f
+        return Pose(
+            floatArrayOf(translation[0], worldFloorY, translation[2]),
+            floatArrayOf(0f, sin(half), 0f, cos(half))
+        )
+    }
+
     fun average(poses: Collection<Pose>): Pose? {
         if (poses.isEmpty()) return null
         val firstQuaternion = poses.first().rotationQuaternion
