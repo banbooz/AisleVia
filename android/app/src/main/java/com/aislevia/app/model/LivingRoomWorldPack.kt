@@ -39,7 +39,7 @@ object LivingRoomWorldPack {
      * on the coffee table at approximately (-0.90, 0.10) in the scan coordinate frame.
      */
     val defaultStoreMap = StoreMap(
-        version = 5,
+        version = 6,
         name = "Living-room proof shop",
         items = listOf(
             ItemRecord(

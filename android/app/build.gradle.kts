@@ -15,8 +15,8 @@ android {
         applicationId = "com.aislevia.app"
         minSdk = 24
         targetSdk = 36
-        versionCode = 12
-        versionName = "0.7.0"
+        versionCode = 13
+        versionName = "0.8.0"
 
         // The installable build only needs real-phone ABIs. Excluding desktop emulator ABIs
         // removes over 100 MB of unused OpenCV binaries while retaining older 32-bit phones.
@@ -80,6 +80,7 @@ dependencies {
     implementation("io.github.sceneview:arsceneview:4.22.0")
     implementation("com.google.ar:core:1.54.0")
     implementation("org.opencv:opencv:4.12.0")
+    implementation("com.google.ai.edge.litert:litert:2.1.5")
 
     // Bundled models work immediately during an offline shop-mapping pass.
     implementation("com.google.mlkit:text-recognition:16.0.1")

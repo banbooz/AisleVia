@@ -37,7 +37,10 @@ data class CameraFrameSample(
     val focalX: Double,
     val focalY: Double,
     val principalX: Double,
-    val principalY: Double
+    val principalY: Double,
+    val depthWidth: Int = 0,
+    val depthHeight: Int = 0,
+    val depthMillimetres: IntArray? = null
 ) {
     companion object {
         fun capture(frame: Frame): CameraFrameSample? {
@@ -64,6 +67,22 @@ data class CameraFrameSample(
                 val intrinsics = frame.camera.imageIntrinsics
                 val focal = intrinsics.focalLength
                 val principal = intrinsics.principalPoint
+                val depth = runCatching {
+                    frame.acquireDepthImage16Bits().use { depthImage ->
+                        val depthPlane = depthImage.planes.first()
+                        val depthBuffer = depthPlane.buffer.order(ByteOrder.LITTLE_ENDIAN)
+                        val values = IntArray(depthImage.width * depthImage.height)
+                        for (depthY in 0 until depthImage.height) {
+                            val rowOffset = depthY * depthPlane.rowStride
+                            for (depthX in 0 until depthImage.width) {
+                                val offset = rowOffset + depthX * depthPlane.pixelStride
+                                values[depthY * depthImage.width + depthX] =
+                                    depthBuffer.getShort(offset).toInt() and 0xFFFF
+                            }
+                        }
+                        Triple(depthImage.width, depthImage.height, values)
+                    }
+                }.getOrNull()
                 CameraFrameSample(
                     width = width,
                     height = height,
@@ -71,7 +90,10 @@ data class CameraFrameSample(
                     focalX = focal[0].toDouble(),
                     focalY = focal[1].toDouble(),
                     principalX = principal[0].toDouble(),
-                    principalY = principal[1].toDouble()
+                    principalY = principal[1].toDouble(),
+                    depthWidth = depth?.first ?: 0,
+                    depthHeight = depth?.second ?: 0,
+                    depthMillimetres = depth?.third
                 )
             } finally {
                 image.close()
@@ -88,7 +110,9 @@ data class VisualLocalizationResult(
     val featureMatches: Int,
     val poseInliers: Int,
     val agreeingFrames: Int,
-    val message: String
+    val message: String,
+    val matchedKeyframeId: Int? = null,
+    val confidence: Float = 0f
 )
 
 private data class VisualFeatureMap(
