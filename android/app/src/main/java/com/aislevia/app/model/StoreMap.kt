@@ -35,6 +35,7 @@ data class LandmarkRecord(
     val physicalWidthMetres: Float,
     val mapPose: PoseRecord,
     val referenceType: String = "room",
+    val zoneId: String? = null,
     val recognitionLabels: List<String> = emptyList()
 )
 
@@ -48,10 +49,40 @@ data class ItemRecord(
 )
 
 @Serializable
+data class WorldBoundsRecord(
+    val minX: Float,
+    val maxX: Float,
+    val minY: Float,
+    val maxY: Float,
+    val minZ: Float,
+    val maxZ: Float
+) {
+    fun contains(pose: Pose, marginMetres: Float = 0f): Boolean {
+        val point = pose.translation
+        return point[0] in (minX - marginMetres)..(maxX + marginMetres) &&
+            point[1] in (minY - marginMetres)..(maxY + marginMetres) &&
+            point[2] in (minZ - marginMetres)..(maxZ + marginMetres)
+    }
+}
+
+@Serializable
+data class WorldModelRecord(
+    val id: String,
+    val assetPath: String,
+    val floorYMetres: Float,
+    val bounds: WorldBoundsRecord,
+    val triangleCount: Int,
+    val source: String,
+    val originDescription: String,
+    val forwardDescription: String
+)
+
+@Serializable
 data class StoreMap(
-    val version: Int = 3,
+    val version: Int = 4,
     val name: String = "Living-room proof shop",
     val landmarks: List<LandmarkRecord> = emptyList(),
     val items: List<ItemRecord> = emptyList(),
-    val minimumLandmarksForLock: Int = 2
+    val minimumLandmarksForLock: Int = 3,
+    val worldModel: WorldModelRecord? = null
 )
