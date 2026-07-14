@@ -44,10 +44,12 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.aislevia.app.ar.LandmarkRelocalizer
 import com.aislevia.app.ar.AlignmentQuality
+import com.aislevia.app.ar.CameraFrameSample
 import com.aislevia.app.ar.FloorPlaneEstimator
 import com.aislevia.app.ar.PoseMath
 import com.aislevia.app.ar.ProductRecognizer
 import com.aislevia.app.ar.ReferenceImageQuality
+import com.aislevia.app.ar.VisualWorldLocalizer
 import com.aislevia.app.data.StoreMapRepository
 import com.aislevia.app.model.ItemRecord
 import com.aislevia.app.model.LandmarkRecord
@@ -117,7 +119,7 @@ fun AisleViaApp() {
                 onNavigate = { page = AppPage.NAVIGATE }
             )
 
-            AppPage.MAP -> MappingPage(
+            AppPage.MAP -> AutomaticItemSetupPage(
                 repository = repository,
                 onFinished = {
                     savedMap = repository.load()
@@ -158,7 +160,6 @@ private fun HomePage(
     val mapReady = map != null &&
         map.version >= 4 &&
         map.worldModel?.id == LivingRoomWorldPack.worldModel.id &&
-        map.landmarks.count { it.referenceType == "room" } >= minimumRoomKeyframes &&
         map.items.isNotEmpty()
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -169,10 +170,10 @@ private fun HomePage(
             verticalArrangement = Arrangement.Center
         ) {
             Text("AISLEVIA", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
-            Text("Scan-backed indoor AR", style = MaterialTheme.typography.headlineLarge)
+            Text("Walk-in automatic AR", style = MaterialTheme.typography.headlineLarge)
             Spacer(Modifier.height(12.dp))
             Text(
-                "The supplied metric 3D scan fixes the room scale and floor. Permanent visual zones reconnect the phone to that world on later visits.",
+                "Walk in and slowly look around. AisleVia compares the whole camera view with the saved 3D room and works out where you are automatically.",
                 color = Color(0xFFC8D8E4)
             )
             Spacer(Modifier.height(22.dp))
@@ -188,9 +189,9 @@ private fun HomePage(
                     )
                     Text(
                         if (!mapReady) {
-                            "Calibrate the supplied 3D room once using $minimumRoomKeyframes sharp fixed references."
+                            "Set the item position once. Room recognition itself needs no named landmarks or manual points."
                         } else {
-                            "3D scan · ${map?.landmarks?.size ?: 0} references · ${map?.items?.size ?: 0} item location(s)"
+                            "Automatic 3D visual map · ${map?.items?.size ?: 0} item location(s)"
                         },
                         color = Color(0xFFAEC4D3)
                     )
@@ -199,7 +200,7 @@ private fun HomePage(
 
             Spacer(Modifier.height(18.dp))
             Button(onClick = onMap, modifier = Modifier.fillMaxWidth()) {
-                Text(if (!mapReady) "Calibrate 3D room and item" else "Recalibrate this room")
+                Text(if (!mapReady) "Set item location once" else "Update item location")
             }
             Spacer(Modifier.height(10.dp))
             Button(
@@ -208,7 +209,7 @@ private fun HomePage(
                 modifier = Modifier.fillMaxWidth(),
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) {
-                Text("Recognise room and find item")
+                Text("Open camera and find item")
             }
         }
     }
@@ -589,40 +590,159 @@ private fun MappingPage(
 }
 
 @Composable
+private fun AutomaticItemSetupPage(
+    repository: StoreMapRepository,
+    onFinished: () -> Unit,
+    onExit: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val engine = rememberEngine()
+    val modelLoader = rememberModelLoader(engine)
+    val materialLoader = rememberMaterialLoader(engine)
+    val localizer = remember { VisualWorldLocalizer(context.applicationContext) }
+    val floorEstimator = remember { FloorPlaneEstimator() }
+
+    var viewport by remember { mutableStateOf(IntSize.Zero) }
+    var latestFrame by remember { mutableStateOf<Frame?>(null) }
+    var worldFromMap by remember { mutableStateOf<Pose?>(null) }
+    var floorY by remember { mutableStateOf<Float?>(null) }
+    var visualBusy by remember { mutableStateOf(false) }
+    var lastVisualAttempt by remember { mutableLongStateOf(0L) }
+    var status by remember {
+        mutableStateOf("Walk in and slowly look around. You do not need to find any specific point.")
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        ARSceneView(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { viewport = it },
+            engine = engine,
+            modelLoader = modelLoader,
+            materialLoader = materialLoader,
+            planeRenderer = false,
+            sessionConfiguration = { session: Session, config: Config ->
+                config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL_AND_VERTICAL
+                config.focusMode = Config.FocusMode.AUTO
+                config.depthMode = if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+                    Config.DepthMode.AUTOMATIC
+                } else {
+                    Config.DepthMode.DISABLED
+                }
+            },
+            onSessionUpdated = { session, frame ->
+                latestFrame = frame
+                if (frame.camera.trackingState == TrackingState.TRACKING) {
+                    floorY = floorEstimator.update(session, frame.camera.pose)
+                    val now = System.currentTimeMillis()
+                    if (!visualBusy && now - lastVisualAttempt >= 650L) {
+                        lastVisualAttempt = now
+                        val sample = runCatching { CameraFrameSample.capture(frame) }.getOrNull()
+                        if (sample != null) {
+                            val cameraPose = Pose(frame.camera.pose.translation, frame.camera.pose.rotationQuaternion)
+                            val capturedFloorY = floorY
+                            visualBusy = true
+                            scope.launch(Dispatchers.Default) {
+                                val result = localizer.localize(
+                                    sample = sample,
+                                    arCameraPose = cameraPose,
+                                    worldFloorY = capturedFloorY
+                                )
+                                withContext(Dispatchers.Main) {
+                                    status = result.message
+                                    if (result.worldFromMap != null) {
+                                        worldFromMap = result.worldFromMap
+                                    }
+                                    visualBusy = false
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            onTrackingFailureChanged = { reason ->
+                if (reason != null) {
+                    status = "Move the phone slowly while tracking recovers."
+                }
+            }
+        )
+
+        CentreGuide(showLandmarkFrame = false)
+
+        TopPanel(
+            title = if (worldFromMap == null) "Recognising the room…" else "Room recognised",
+            instruction = if (worldFromMap == null) {
+                "Simply look around while AisleVia compares the camera with the complete 3D room."
+            } else {
+                "For this one-time staff setup, point at the base of the Pringles can."
+            },
+            status = status,
+            onExit = onExit
+        )
+
+        BottomActionPanel(
+            caption = if (worldFromMap == null) {
+                "Automatic whole-room scan · no named landmarks"
+            } else {
+                "The shopper will not need to repeat this item-location step."
+            },
+            buttonText = "Save Pringles location",
+            enabled = worldFromMap != null && latestFrame != null && viewport != IntSize.Zero,
+            onClick = {
+                val origin = worldFromMap
+                val itemHit = latestFrame?.let {
+                    centreHitPose(it, viewport, horizontalOnly = false)
+                }
+                if (origin == null || itemHit == null) {
+                    status = "Move slightly until the item surface is detected."
+                } else {
+                    repository.save(
+                        StoreMap(
+                            items = listOf(
+                                ItemRecord(
+                                    id = "pringles",
+                                    name = "Pringles can",
+                                    mapPose = PoseRecord.fromPose(origin.inverse().compose(itemHit))
+                                )
+                            ),
+                            worldModel = LivingRoomWorldPack.worldModel
+                        )
+                    )
+                    status = "Saved. Future shoppers only need to walk in and look around."
+                    onFinished()
+                }
+            }
+        )
+    }
+}
+
+@Composable
 private fun NavigationPage(
     map: StoreMap,
     repository: StoreMapRepository,
     onExit: () -> Unit
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val materialLoader = rememberMaterialLoader(engine)
-    val navigationLandmarks = remember(map) {
-        map.landmarks.filter { landmark ->
-            landmark.referenceType == "room" && landmark.id !in redundantNavigationLandmarkIds
-        }
-    }
-    val relocalizer = remember(map) {
-        LandmarkRelocalizer(minimumMatches = requiredNavigationMatches)
-    }
+    val localizer = remember(map) { VisualWorldLocalizer(context.applicationContext) }
     val floorEstimator = remember(map) { FloorPlaneEstimator() }
-    val landmarkById = remember(navigationLandmarks) { navigationLandmarks.associateBy { it.id } }
     val item = remember(map) { map.items.first() }
 
-    var status by remember { mutableStateOf("Loading saved visual landmarks…") }
-    var alignment by remember { mutableStateOf(relocalizer.snapshot) }
+    var status by remember {
+        mutableStateOf("Walk in and slowly look around. No particular landmark is required.")
+    }
+    var worldFromMap by remember { mutableStateOf<Pose?>(null) }
     var cameraInMap by remember { mutableStateOf<Pose?>(null) }
     var lastRouteUpdate by remember { mutableLongStateOf(0L) }
-    var previousAlignmentKey by remember { mutableStateOf("") }
-    var databaseReady by remember { mutableStateOf(false) }
-    var navigationSession by remember { mutableStateOf<Session?>(null) }
-    var recognitionStartedAt by remember { mutableLongStateOf(0L) }
-    var recognitionWindowComplete by remember { mutableStateOf(false) }
+    var lastVisualAttempt by remember { mutableLongStateOf(0L) }
+    var visualBusy by remember { mutableStateOf(false) }
     var floorLocked by remember { mutableStateOf(false) }
     var positionInsideWorld by remember { mutableStateOf(false) }
-    val navigationReady = recognitionWindowComplete && alignment.canRenderNavigation &&
-        floorLocked && positionInsideWorld
+    val navigationReady = worldFromMap != null && floorLocked && positionInsideWorld
 
     val greenMaterial = remember(materialLoader) {
         materialLoader.createColorInstance(Color(0xFF2CF58A), unlit = true)
@@ -654,77 +774,36 @@ private fun NavigationPage(
                     Config.DepthMode.DISABLED
                 }
             },
-            onSessionCreated = { session ->
-                navigationSession = session
-                scope.launch {
-                    status = "Preparing the saved visual map…"
-                    val database = withContext(Dispatchers.Default) {
-                        prepareNavigationImageDatabase(session, repository, navigationLandmarks)
-                    }
-                    if (database != null && database.numImages > 0) {
-                        withContext(Dispatchers.Main) {
-                            session.configure { config ->
-                                config.augmentedImageDatabase = database
-                            }
-                        }
-                        databaseReady = true
-                        status = "Visual map ready. Slowly show the room for five seconds."
-                    } else {
-                        status = "No usable room keyframes were loaded. Remap the room."
-                    }
-                }
-            },
-            onSessionUpdated = { _, frame ->
-                if (frame.camera.trackingState == TrackingState.TRACKING && databaseReady) {
-                    val worldFloorY = navigationSession?.let { session ->
-                        floorEstimator.update(session, frame.camera.pose)
-                    }
+            onSessionUpdated = { session, frame ->
+                if (frame.camera.trackingState == TrackingState.TRACKING) {
+                    val now = System.currentTimeMillis()
+                    val worldFloorY = floorEstimator.update(session, frame.camera.pose)
                     floorLocked = worldFloorY != null
-                    frame.getUpdatedTrackables(AugmentedImage::class.java).forEach { image ->
-                        if (image.trackingState == TrackingState.TRACKING) {
-                            val record = landmarkById[image.name]
-                            if (record != null) {
-                                alignment = relocalizer.observe(
-                                    landmarkId = record.zoneId ?: record.id,
-                                    detectedWorldPose = image.centerPose,
-                                    storedMapPose = record.mapPose.toPose(),
+
+                    if (!visualBusy && now - lastVisualAttempt >= 650L) {
+                        lastVisualAttempt = now
+                        val sample = runCatching { CameraFrameSample.capture(frame) }.getOrNull()
+                        if (sample != null) {
+                            val cameraPose = Pose(frame.camera.pose.translation, frame.camera.pose.rotationQuaternion)
+                            visualBusy = true
+                            scope.launch(Dispatchers.Default) {
+                                val result = localizer.localize(
+                                    sample = sample,
+                                    arCameraPose = cameraPose,
                                     worldFloorY = worldFloorY
                                 )
+                                withContext(Dispatchers.Main) {
+                                    status = result.message
+                                    if (result.worldFromMap != null) {
+                                        worldFromMap = result.worldFromMap
+                                    }
+                                    visualBusy = false
+                                }
                             }
                         }
                     }
 
-                    alignment = relocalizer.tick()
-                    val now = System.currentTimeMillis()
-                    if (recognitionStartedAt == 0L) recognitionStartedAt = now
-                    val elapsed = now - recognitionStartedAt
-                    if (!recognitionWindowComplete && elapsed < customerRecognitionWindowMillis) {
-                        val secondsRemaining =
-                            ((customerRecognitionWindowMillis - elapsed + 999L) / 1_000L).coerceAtLeast(1L)
-                        status = "Visual fix: ${secondsRemaining}s · ${alignment.recentMatches} fixed zone(s) connected."
-                    } else {
-                        if (!recognitionWindowComplete) {
-                            recognitionWindowComplete = true
-                            previousAlignmentKey = ""
-                        }
-                        val alignmentKey =
-                            "${alignment.quality}:${alignment.recentMatches}:${alignment.agreeingMatches}"
-                        if (alignmentKey != previousAlignmentKey) {
-                            previousAlignmentKey = alignmentKey
-                            status = when (alignment.quality) {
-                                AlignmentQuality.SEARCHING ->
-                                    "Five-second scan complete. Keep turning slowly so the room can be located."
-                                AlignmentQuality.CHECKING ->
-                                    "Connected ${alignment.recentMatches} fixed zone(s). Need $requiredNavigationMatches agreeing zones."
-                                AlignmentQuality.LOCKED ->
-                                    "Room located from ${alignment.agreeingMatches} agreeing zones. Checking its 3D bounds and floor."
-                                AlignmentQuality.STALE ->
-                                    "Alignment confidence dropped. Turn toward mapped room detail again."
-                            }
-                        }
-                    }
-
-                    val mapTransform = alignment.pose
+                    val mapTransform = worldFromMap
                     if (mapTransform != null && now - lastRouteUpdate > 180L) {
                         val mappedCamera = mapTransform.inverse().compose(frame.camera.pose)
                         positionInsideWorld = map.worldModel?.bounds
@@ -736,22 +815,23 @@ private fun NavigationPage(
                         cameraInMap = null
                     }
 
-                    if (alignment.canRenderNavigation && !floorLocked) {
-                        status = "The room matches, but the floor is not fixed yet. Aim down and slowly scan the carpet."
-                    } else if (alignment.canRenderNavigation && floorLocked && !positionInsideWorld) {
-                        status = "That visual pose falls outside the supplied 3D scan, so it was rejected. Show another fixed zone."
-                    } else if (navigationReady) {
-                        status = "3D pose locked: ${alignment.agreeingMatches} zones agree and the scanned floor is aligned."
+                    if (mapTransform != null && !floorLocked) {
+                        status = "Room recognised. Keep moving normally while the floor finishes loading."
+                    } else if (mapTransform != null && floorLocked && !positionInsideWorld) {
+                        worldFromMap = null
+                        status = "That result fell outside the scanned room, so it was rejected automatically."
+                    } else if (navigationReady && !visualBusy) {
+                        status = "Room and position verified. Navigation is live."
                     }
                 }
             },
             onTrackingFailureChanged = { reason ->
                 if (reason != null) {
-                    status = "Tracking paused: ${reason.name.lowercase().replace('_', ' ')}"
+                    status = "Move the phone slowly while tracking recovers."
                 }
             }
         ) {
-            val mapTransform = alignment.pose
+            val mapTransform = worldFromMap
             if (navigationReady && mapTransform != null) {
                 PoseNode(pose = mapTransform) {
                     routeMarkers.forEach { point ->
@@ -775,11 +855,11 @@ private fun NavigationPage(
         }
 
         TopPanel(
-            title = if (!navigationReady) "Connecting visual map…" else "Finding ${item.name}",
+            title = if (!navigationReady) "Recognising the room…" else "Finding " + item.name,
             instruction = if (!navigationReady) {
-                "Show several fixed zones, then aim at the carpet so the scan can verify both pose and floor."
+                "Slowly look around in any direction. There are no required pictures, corners or markers."
             } else {
-                "The route is drawn only after the visual pose fits inside the supplied metric 3D world."
+                "AisleVia keeps rechecking the room while ARCore tracks your movement."
             },
             status = status,
             onExit = onExit
@@ -796,7 +876,11 @@ private fun NavigationPage(
             Column(Modifier.padding(16.dp)) {
                 Text(item.name, style = MaterialTheme.typography.titleMedium)
                 Text(
-                    if (!navigationReady) "Verifying fixed zones, 3D bounds and floor" else "Virtual route aligned to the scanned room",
+                    if (!navigationReady) {
+                        "Move the camera naturally while the 3D position is verified"
+                    } else {
+                        "Automatic 3D position locked"
+                    },
                     color = Color(0xFFAEC4D3)
                 )
             }

@@ -15,8 +15,8 @@ android {
         applicationId = "com.aislevia.app"
         minSdk = 28
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.5.1"
+        versionCode = 9
+        versionName = "0.6.0"
     }
 
     buildTypes {
@@ -70,6 +70,7 @@ dependencies {
     implementation("io.github.sceneview:sceneview:4.22.0")
     implementation("io.github.sceneview:arsceneview:4.22.0")
     implementation("com.google.ar:core:1.54.0")
+    implementation("org.opencv:opencv:4.12.0")
 
     // Bundled models work immediately during an offline shop-mapping pass.
     implementation("com.google.mlkit:text-recognition:16.0.1")
