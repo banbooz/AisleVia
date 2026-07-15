@@ -1,4 +1,7 @@
 __pycache__/
 *.pyc
+.venv/
+.cache/
 .gradle/
 **/build/
+android/local.properties

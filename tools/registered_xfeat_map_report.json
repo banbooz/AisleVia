@@ -1,0 +1,657 @@
+{
+  "source_photo_count": 259,
+  "training_photo_count": 240,
+  "holdout_photo_count": 19,
+  "pair_count": 595,
+  "triangulated_candidate_count": 623628,
+  "map_feature_count": 27900,
+  "orientation_feature_counts": {
+    "0": 9300,
+    "1": 9300,
+    "-1": 9300
+  },
+  "coordinate_axis": [
+    [
+      1.0,
+      0.0,
+      0.0
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ],
+    [
+      0.0,
+      -1.0,
+      0.0
+    ]
+  ],
+  "coordinate_translation": [
+    0.5697206000000001,
+    0.8113972,
+    1.804483900000001
+  ],
+  "holdout_success_count": 18,
+  "holdout_success_rate": 0.9473684210526315,
+  "median_translation_error_metres": 0.04438421935928459,
+  "median_rotation_error_degrees": 1.5611041687419607,
+  "holdout_results": [
+    {
+      "camera": "edcaeabe-e5e8-4b86-a1ce-4abcd4675d58",
+      "matches": 91,
+      "success": true,
+      "inliers": 30,
+      "translation_error_metres": 0.08635676421873008,
+      "rotation_error_degrees": 5.460237418607319
+    },
+    {
+      "camera": "eea815e5-79cd-443f-824e-4667f84b1a4a",
+      "matches": 85,
+      "success": true,
+      "inliers": 38,
+      "translation_error_metres": 0.06513063127028101,
+      "rotation_error_degrees": 2.3590870255951137
+    },
+    {
+      "camera": "ef15e7f1-2bb6-4bf4-8ee4-351d393cb869",
+      "matches": 64,
+      "success": true,
+      "inliers": 30,
+      "translation_error_metres": 0.027065386652313075,
+      "rotation_error_degrees": 0.18713167710275894
+    },
+    {
+      "camera": "f23c2e82-de51-4904-ac01-d642f3fad931",
+      "matches": 127,
+      "success": true,
+      "inliers": 59,
+      "translation_error_metres": 0.013684812010028405,
+      "rotation_error_degrees": 0.6937634865930692
+    },
+    {
+      "camera": "f372285b-975f-4198-9fbb-11087bc3f374",
+      "matches": 61,
+      "success": true,
+      "inliers": 20,
+      "translation_error_metres": 0.2658455077843694,
+      "rotation_error_degrees": 6.39642390291293
+    },
+    {
+      "camera": "f3cb89e0-4287-45c4-bc45-f86e08d12f4c",
+      "matches": 61,
+      "success": true,
+      "inliers": 21,
+      "translation_error_metres": 0.11858831694126229,
+      "rotation_error_degrees": 2.6739311172300866
+    },
+    {
+      "camera": "f3e9c0d1-2905-4a96-8b59-56928c31df7c",
+      "matches": 21,
+      "success": false,
+      "inliers": 6
+    },
+    {
+      "camera": "f4ecdf34-60ef-4624-a1c0-9cfa4938d56f",
+      "matches": 186,
+      "success": true,
+      "inliers": 106,
+      "translation_error_metres": 0.03468808277802935,
+      "rotation_error_degrees": 1.4987590488658094
+    },
+    {
+      "camera": "f64cf278-7417-4054-a5ce-ff88c6e0f919",
+      "matches": 91,
+      "success": true,
+      "inliers": 56,
+      "translation_error_metres": 0.09563146226000546,
+      "rotation_error_degrees": 2.2396768794269253
+    },
+    {
+      "camera": "f7029fd5-70b7-4fdf-a54a-460274129646",
+      "matches": 28,
+      "success": true,
+      "inliers": 8,
+      "translation_error_metres": 0.3116616970967286,
+      "rotation_error_degrees": 4.969187562715191
+    },
+    {
+      "camera": "f973f7b2-0d8d-4f99-b661-ae2ad2459dfb",
+      "matches": 234,
+      "success": true,
+      "inliers": 96,
+      "translation_error_metres": 0.06247135837066086,
+      "rotation_error_degrees": 2.759694946244093
+    },
+    {
+      "camera": "f99cb8ca-147c-4524-94d5-0df92f6e2254",
+      "matches": 205,
+      "success": true,
+      "inliers": 132,
+      "translation_error_metres": 0.034687024624309205,
+      "rotation_error_degrees": 1.6234492886181122
+    },
+    {
+      "camera": "fb3fc812-e97c-4821-abaa-ca5ccb8dff37",
+      "matches": 127,
+      "success": true,
+      "inliers": 70,
+      "translation_error_metres": 0.014224490884222911,
+      "rotation_error_degrees": 1.495053086744844
+    },
+    {
+      "camera": "fcb0e688-b40d-4b8f-bef0-c5d1f978a5ff",
+      "matches": 59,
+      "success": true,
+      "inliers": 22,
+      "translation_error_metres": 0.02812160757210895,
+      "rotation_error_degrees": 0.6506155832494028
+    },
+    {
+      "camera": "fd86e697-0f16-4371-b65c-bc5398f3d976",
+      "matches": 98,
+      "success": true,
+      "inliers": 59,
+      "translation_error_metres": 0.05408035594053984,
+      "rotation_error_degrees": 1.4393751366372354
+    },
+    {
+      "camera": "fe8e570f-7004-4ecf-bbf1-8c6df944b0ee",
+      "matches": 255,
+      "success": true,
+      "inliers": 119,
+      "translation_error_metres": 0.027973653495466096,
+      "rotation_error_degrees": 0.7102501344408628
+    },
+    {
+      "camera": "fe8efa46-8d83-46dc-b691-64f949910f71",
+      "matches": 272,
+      "success": true,
+      "inliers": 181,
+      "translation_error_metres": 0.007431847353772965,
+      "rotation_error_degrees": 0.18673089646255916
+    },
+    {
+      "camera": "ff05afd2-bda4-4d33-b8ea-ab3301a43b48",
+      "matches": 106,
+      "success": true,
+      "inliers": 36,
+      "translation_error_metres": 0.011798249868408496,
+      "rotation_error_degrees": 0.5389560810257806
+    },
+    {
+      "camera": "ff156661-b512-485d-a1bb-3edfcc3dd282",
+      "matches": 42,
+      "success": true,
+      "inliers": 15,
+      "translation_error_metres": 0.06449194028688188,
+      "rotation_error_degrees": 5.393137039235304
+    }
+  ],
+  "orientation_results": {
+    "portrait": {
+      "success_count": 18,
+      "success_rate": 0.9473684210526315,
+      "results": [
+        {
+          "camera": "edcaeabe-e5e8-4b86-a1ce-4abcd4675d58",
+          "matches": 91,
+          "success": true,
+          "inliers": 30,
+          "translation_error_metres": 0.08635676421873008,
+          "rotation_error_degrees": 5.460237418607319
+        },
+        {
+          "camera": "eea815e5-79cd-443f-824e-4667f84b1a4a",
+          "matches": 85,
+          "success": true,
+          "inliers": 38,
+          "translation_error_metres": 0.06513063127028101,
+          "rotation_error_degrees": 2.3590870255951137
+        },
+        {
+          "camera": "ef15e7f1-2bb6-4bf4-8ee4-351d393cb869",
+          "matches": 64,
+          "success": true,
+          "inliers": 30,
+          "translation_error_metres": 0.027065386652313075,
+          "rotation_error_degrees": 0.18713167710275894
+        },
+        {
+          "camera": "f23c2e82-de51-4904-ac01-d642f3fad931",
+          "matches": 127,
+          "success": true,
+          "inliers": 59,
+          "translation_error_metres": 0.013684812010028405,
+          "rotation_error_degrees": 0.6937634865930692
+        },
+        {
+          "camera": "f372285b-975f-4198-9fbb-11087bc3f374",
+          "matches": 61,
+          "success": true,
+          "inliers": 20,
+          "translation_error_metres": 0.2658455077843694,
+          "rotation_error_degrees": 6.39642390291293
+        },
+        {
+          "camera": "f3cb89e0-4287-45c4-bc45-f86e08d12f4c",
+          "matches": 61,
+          "success": true,
+          "inliers": 21,
+          "translation_error_metres": 0.11858831694126229,
+          "rotation_error_degrees": 2.6739311172300866
+        },
+        {
+          "camera": "f3e9c0d1-2905-4a96-8b59-56928c31df7c",
+          "matches": 21,
+          "success": false,
+          "inliers": 6
+        },
+        {
+          "camera": "f4ecdf34-60ef-4624-a1c0-9cfa4938d56f",
+          "matches": 186,
+          "success": true,
+          "inliers": 106,
+          "translation_error_metres": 0.03468808277802935,
+          "rotation_error_degrees": 1.4987590488658094
+        },
+        {
+          "camera": "f64cf278-7417-4054-a5ce-ff88c6e0f919",
+          "matches": 91,
+          "success": true,
+          "inliers": 56,
+          "translation_error_metres": 0.09563146226000546,
+          "rotation_error_degrees": 2.2396768794269253
+        },
+        {
+          "camera": "f7029fd5-70b7-4fdf-a54a-460274129646",
+          "matches": 28,
+          "success": true,
+          "inliers": 8,
+          "translation_error_metres": 0.3116616970967286,
+          "rotation_error_degrees": 4.969187562715191
+        },
+        {
+          "camera": "f973f7b2-0d8d-4f99-b661-ae2ad2459dfb",
+          "matches": 234,
+          "success": true,
+          "inliers": 96,
+          "translation_error_metres": 0.06247135837066086,
+          "rotation_error_degrees": 2.759694946244093
+        },
+        {
+          "camera": "f99cb8ca-147c-4524-94d5-0df92f6e2254",
+          "matches": 205,
+          "success": true,
+          "inliers": 132,
+          "translation_error_metres": 0.034687024624309205,
+          "rotation_error_degrees": 1.6234492886181122
+        },
+        {
+          "camera": "fb3fc812-e97c-4821-abaa-ca5ccb8dff37",
+          "matches": 127,
+          "success": true,
+          "inliers": 70,
+          "translation_error_metres": 0.014224490884222911,
+          "rotation_error_degrees": 1.495053086744844
+        },
+        {
+          "camera": "fcb0e688-b40d-4b8f-bef0-c5d1f978a5ff",
+          "matches": 59,
+          "success": true,
+          "inliers": 22,
+          "translation_error_metres": 0.02812160757210895,
+          "rotation_error_degrees": 0.6506155832494028
+        },
+        {
+          "camera": "fd86e697-0f16-4371-b65c-bc5398f3d976",
+          "matches": 98,
+          "success": true,
+          "inliers": 59,
+          "translation_error_metres": 0.05408035594053984,
+          "rotation_error_degrees": 1.4393751366372354
+        },
+        {
+          "camera": "fe8e570f-7004-4ecf-bbf1-8c6df944b0ee",
+          "matches": 255,
+          "success": true,
+          "inliers": 119,
+          "translation_error_metres": 0.027973653495466096,
+          "rotation_error_degrees": 0.7102501344408628
+        },
+        {
+          "camera": "fe8efa46-8d83-46dc-b691-64f949910f71",
+          "matches": 272,
+          "success": true,
+          "inliers": 181,
+          "translation_error_metres": 0.007431847353772965,
+          "rotation_error_degrees": 0.18673089646255916
+        },
+        {
+          "camera": "ff05afd2-bda4-4d33-b8ea-ab3301a43b48",
+          "matches": 106,
+          "success": true,
+          "inliers": 36,
+          "translation_error_metres": 0.011798249868408496,
+          "rotation_error_degrees": 0.5389560810257806
+        },
+        {
+          "camera": "ff156661-b512-485d-a1bb-3edfcc3dd282",
+          "matches": 42,
+          "success": true,
+          "inliers": 15,
+          "translation_error_metres": 0.06449194028688188,
+          "rotation_error_degrees": 5.393137039235304
+        }
+      ]
+    },
+    "clockwise": {
+      "success_count": 17,
+      "success_rate": 0.8947368421052632,
+      "results": [
+        {
+          "camera": "edcaeabe-e5e8-4b86-a1ce-4abcd4675d58",
+          "matches": 76,
+          "success": true,
+          "inliers": 26,
+          "translation_error_metres": 0.09711502971920452,
+          "rotation_error_degrees": 6.906842895650372
+        },
+        {
+          "camera": "eea815e5-79cd-443f-824e-4667f84b1a4a",
+          "matches": 122,
+          "success": true,
+          "inliers": 45,
+          "translation_error_metres": 0.06553061704156445,
+          "rotation_error_degrees": 2.6223566014810737
+        },
+        {
+          "camera": "ef15e7f1-2bb6-4bf4-8ee4-351d393cb869",
+          "matches": 38,
+          "success": true,
+          "inliers": 16,
+          "translation_error_metres": 0.05717826304589067,
+          "rotation_error_degrees": 1.249352053500687
+        },
+        {
+          "camera": "f23c2e82-de51-4904-ac01-d642f3fad931",
+          "matches": 119,
+          "success": true,
+          "inliers": 72,
+          "translation_error_metres": 0.016260077890941048,
+          "rotation_error_degrees": 0.41066811257328073
+        },
+        {
+          "camera": "f372285b-975f-4198-9fbb-11087bc3f374",
+          "matches": 90,
+          "success": true,
+          "inliers": 40,
+          "translation_error_metres": 0.18155288430784644,
+          "rotation_error_degrees": 0.9046300711746038
+        },
+        {
+          "camera": "f3cb89e0-4287-45c4-bc45-f86e08d12f4c",
+          "matches": 40,
+          "success": true,
+          "inliers": 14,
+          "translation_error_metres": 0.28361135126502635,
+          "rotation_error_degrees": 6.081900335382875
+        },
+        {
+          "camera": "f3e9c0d1-2905-4a96-8b59-56928c31df7c",
+          "matches": 29,
+          "success": false,
+          "inliers": 7
+        },
+        {
+          "camera": "f4ecdf34-60ef-4624-a1c0-9cfa4938d56f",
+          "matches": 119,
+          "success": true,
+          "inliers": 66,
+          "translation_error_metres": 0.07509797610283511,
+          "rotation_error_degrees": 2.223917854592592
+        },
+        {
+          "camera": "f64cf278-7417-4054-a5ce-ff88c6e0f919",
+          "matches": 66,
+          "success": true,
+          "inliers": 30,
+          "translation_error_metres": 0.05365966572808831,
+          "rotation_error_degrees": 2.5646939324104485
+        },
+        {
+          "camera": "f7029fd5-70b7-4fdf-a54a-460274129646",
+          "matches": 21,
+          "success": false,
+          "inliers": 5
+        },
+        {
+          "camera": "f973f7b2-0d8d-4f99-b661-ae2ad2459dfb",
+          "matches": 179,
+          "success": true,
+          "inliers": 78,
+          "translation_error_metres": 0.034122995979570726,
+          "rotation_error_degrees": 1.7275032670393276
+        },
+        {
+          "camera": "f99cb8ca-147c-4524-94d5-0df92f6e2254",
+          "matches": 195,
+          "success": true,
+          "inliers": 134,
+          "translation_error_metres": 0.01227553071937921,
+          "rotation_error_degrees": 0.4981776647069822
+        },
+        {
+          "camera": "fb3fc812-e97c-4821-abaa-ca5ccb8dff37",
+          "matches": 208,
+          "success": true,
+          "inliers": 93,
+          "translation_error_metres": 0.030895114823448516,
+          "rotation_error_degrees": 2.2575171176449143
+        },
+        {
+          "camera": "fcb0e688-b40d-4b8f-bef0-c5d1f978a5ff",
+          "matches": 72,
+          "success": true,
+          "inliers": 31,
+          "translation_error_metres": 0.027188755367389853,
+          "rotation_error_degrees": 0.8721601107849437
+        },
+        {
+          "camera": "fd86e697-0f16-4371-b65c-bc5398f3d976",
+          "matches": 82,
+          "success": true,
+          "inliers": 46,
+          "translation_error_metres": 0.08287763826324077,
+          "rotation_error_degrees": 2.20648408253524
+        },
+        {
+          "camera": "fe8e570f-7004-4ecf-bbf1-8c6df944b0ee",
+          "matches": 244,
+          "success": true,
+          "inliers": 148,
+          "translation_error_metres": 0.034440780427797635,
+          "rotation_error_degrees": 1.0997473329597298
+        },
+        {
+          "camera": "fe8efa46-8d83-46dc-b691-64f949910f71",
+          "matches": 232,
+          "success": true,
+          "inliers": 116,
+          "translation_error_metres": 0.005074550576890169,
+          "rotation_error_degrees": 0.21195525232098034
+        },
+        {
+          "camera": "ff05afd2-bda4-4d33-b8ea-ab3301a43b48",
+          "matches": 171,
+          "success": true,
+          "inliers": 69,
+          "translation_error_metres": 0.01726756259689871,
+          "rotation_error_degrees": 0.4822090652246361
+        },
+        {
+          "camera": "ff156661-b512-485d-a1bb-3edfcc3dd282",
+          "matches": 39,
+          "success": true,
+          "inliers": 9,
+          "translation_error_metres": 0.35243632756745763,
+          "rotation_error_degrees": 16.21989599913428
+        }
+      ]
+    },
+    "counterclockwise": {
+      "success_count": 17,
+      "success_rate": 0.8947368421052632,
+      "results": [
+        {
+          "camera": "edcaeabe-e5e8-4b86-a1ce-4abcd4675d58",
+          "matches": 125,
+          "success": true,
+          "inliers": 33,
+          "translation_error_metres": 0.08318692994749007,
+          "rotation_error_degrees": 6.693147772073836
+        },
+        {
+          "camera": "eea815e5-79cd-443f-824e-4667f84b1a4a",
+          "matches": 95,
+          "success": true,
+          "inliers": 39,
+          "translation_error_metres": 0.06831145298161811,
+          "rotation_error_degrees": 2.3964891561844532
+        },
+        {
+          "camera": "ef15e7f1-2bb6-4bf4-8ee4-351d393cb869",
+          "matches": 46,
+          "success": true,
+          "inliers": 20,
+          "translation_error_metres": 0.09370263520850572,
+          "rotation_error_degrees": 3.262617241193954
+        },
+        {
+          "camera": "f23c2e82-de51-4904-ac01-d642f3fad931",
+          "matches": 136,
+          "success": true,
+          "inliers": 82,
+          "translation_error_metres": 0.027884851573571408,
+          "rotation_error_degrees": 1.126251511288393
+        },
+        {
+          "camera": "f372285b-975f-4198-9fbb-11087bc3f374",
+          "matches": 101,
+          "success": true,
+          "inliers": 43,
+          "translation_error_metres": 0.1866544980136179,
+          "rotation_error_degrees": 0.682819064651192
+        },
+        {
+          "camera": "f3cb89e0-4287-45c4-bc45-f86e08d12f4c",
+          "matches": 40,
+          "success": true,
+          "inliers": 11,
+          "translation_error_metres": 0.04367245055687745,
+          "rotation_error_degrees": 1.8117466277641823
+        },
+        {
+          "camera": "f3e9c0d1-2905-4a96-8b59-56928c31df7c",
+          "matches": 33,
+          "success": false,
+          "inliers": 7
+        },
+        {
+          "camera": "f4ecdf34-60ef-4624-a1c0-9cfa4938d56f",
+          "matches": 168,
+          "success": true,
+          "inliers": 108,
+          "translation_error_metres": 0.020611760827980996,
+          "rotation_error_degrees": 0.583465400641138
+        },
+        {
+          "camera": "f64cf278-7417-4054-a5ce-ff88c6e0f919",
+          "matches": 71,
+          "success": true,
+          "inliers": 28,
+          "translation_error_metres": 0.08088539688395673,
+          "rotation_error_degrees": 2.3765465643858352
+        },
+        {
+          "camera": "f7029fd5-70b7-4fdf-a54a-460274129646",
+          "matches": 26,
+          "success": false,
+          "inliers": 6
+        },
+        {
+          "camera": "f973f7b2-0d8d-4f99-b661-ae2ad2459dfb",
+          "matches": 172,
+          "success": true,
+          "inliers": 80,
+          "translation_error_metres": 0.10306172792997641,
+          "rotation_error_degrees": 4.349004738858586
+        },
+        {
+          "camera": "f99cb8ca-147c-4524-94d5-0df92f6e2254",
+          "matches": 204,
+          "success": true,
+          "inliers": 125,
+          "translation_error_metres": 0.05218876045510785,
+          "rotation_error_degrees": 2.2101479894599394
+        },
+        {
+          "camera": "fb3fc812-e97c-4821-abaa-ca5ccb8dff37",
+          "matches": 153,
+          "success": true,
+          "inliers": 82,
+          "translation_error_metres": 0.04454788210205439,
+          "rotation_error_degrees": 3.2841717376198587
+        },
+        {
+          "camera": "fcb0e688-b40d-4b8f-bef0-c5d1f978a5ff",
+          "matches": 61,
+          "success": true,
+          "inliers": 27,
+          "translation_error_metres": 0.06861526426604306,
+          "rotation_error_degrees": 1.226186039511655
+        },
+        {
+          "camera": "fd86e697-0f16-4371-b65c-bc5398f3d976",
+          "matches": 73,
+          "success": true,
+          "inliers": 46,
+          "translation_error_metres": 0.03469723732892014,
+          "rotation_error_degrees": 0.7692560310183936
+        },
+        {
+          "camera": "fe8e570f-7004-4ecf-bbf1-8c6df944b0ee",
+          "matches": 270,
+          "success": true,
+          "inliers": 147,
+          "translation_error_metres": 0.0067321942013841545,
+          "rotation_error_degrees": 0.2187409936392239
+        },
+        {
+          "camera": "fe8efa46-8d83-46dc-b691-64f949910f71",
+          "matches": 260,
+          "success": true,
+          "inliers": 167,
+          "translation_error_metres": 0.01731888996501333,
+          "rotation_error_degrees": 0.5178655219561805
+        },
+        {
+          "camera": "ff05afd2-bda4-4d33-b8ea-ab3301a43b48",
+          "matches": 138,
+          "success": true,
+          "inliers": 67,
+          "translation_error_metres": 0.009899460360596036,
+          "rotation_error_degrees": 1.292781513021407
+        },
+        {
+          "camera": "ff156661-b512-485d-a1bb-3edfcc3dd282",
+          "matches": 46,
+          "success": true,
+          "inliers": 12,
+          "translation_error_metres": 0.2474295645020779,
+          "rotation_error_degrees": 14.081733028850701
+        }
+      ]
+    }
+  }
+}

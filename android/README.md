@@ -1,4 +1,15 @@
-# AisleVia native Android prototype v0.5.0
+# AisleVia native Android prototype
+
+The current customer-facing performance contract is defined in
+[`ZERO_SETUP_RECOGNITION.md`](ZERO_SETUP_RECOGNITION.md). It requires a verified, route-ready pose
+within five seconds of the first usable camera frame and forbids treating a successful build as
+recognition evidence.
+
+Current status: **v1.1.0 is a real-photo debug candidate**. It replaces the learned synthetic/atlas
+map with 27,900 metric features triangulated from 240 registered source photographs. Nineteen
+excluded photos provide offline evidence across portrait and both landscape sensor rotations; see
+[`REAL_PHOTO_LOCALIZATION.md`](REAL_PHOTO_LOCALIZATION.md). Live five-second recognition and route
+alignment still require the Samsung Galaxy S20 FE room test.
 
 ## Scan-backed living-room world
 
@@ -14,7 +25,7 @@ treating unrelated camera crops as the world itself.
 The prepared GLB, texture and machine-readable manifest are under
 `app/src/main/assets/world/living_room/`. `tools/recenter_glb.py` performs the metric origin shift.
 
-## One-time calibration
+## Legacy mapper
 
 1. Aim at the carpet directly below the fireplace centre to place the scan origin.
 2. Aim at the carpet directly below the television centre to set the scan direction.
@@ -43,11 +54,10 @@ Android phone. The repository workflow builds a debug APK for pull requests and 
 
 ## Honest prototype limits
 
-This is a substantial improvement over random flat keyframes, but it is not yet a full
-feature-map/VPS engine. The 3D mesh supplies the metric coordinate system, floor and physical
-bounds; ARCore visual references reconnect a live session to it. A production shop version should
-match live camera features directly against 3D scan keypoints and use a walkable navmesh for paths
-around shelves and furniture.
+The customer path now matches live XFeat descriptors directly against triangulated real-photo 3D
+points. The older manual reference mapper remains only as an internal legacy/fallback path and is
+not part of the shopper flow. The offline holdout proves photo relocalisation, not live timing,
+wrong-room rejection, or arrow alignment on the target handset; those remain device-test gates.
 
 The eight references are deliberately fixed architectural or printed details. People, cushions,
 plants, television content and tabletop clutter are excluded because they move. All reference
